@@ -27,7 +27,7 @@ python -m pytest tests\ -q -v
 - `test_struct_members_have_no_comment_text` —— 断言成员名都是合法标识符，
   防止多行注释的文字被误当成员名
 - `test_guard_accepts_valid_code` —— 合法代码零误报。
-  误报会让人绕过护栏，比没有护栏更糟
+  误报多了，用的人就会绕过护栏，护栏等于不存在
 - `test_resolve_macro_values_chain` —— 宏的依赖链解析
   （`GPIOA_BASE` → `APB2PERIPH_BASE` → `PERIPH_BASE`）
 
