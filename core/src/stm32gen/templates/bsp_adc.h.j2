@@ -1,0 +1,72 @@
+/**
+  ******************************************************************************
+  * @file    bsp_adc.h
+  * @brief   {{ ctx.chip }} 模数转换（ADC）配置。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * ADC 的配置分两部分，本文件都做：
+  *   1. ADC_Init(...)              模式、扫描、连续、触发源、对齐、序列长度
+  *   2. ADC_RegularChannelConfig   逐条配规则组的通道与采样时间
+  *
+  * 模拟输入引脚的 GPIO_Init 在 bsp_gpio.c 里（配成 GPIO_Mode_AIN），
+  * 引脚模式是 GPIO 的职责，同一引脚只在一处配置。
+  *
+  * **三处容易踩的坑**：
+  *   1. 引脚必须是 GPIO_Mode_AIN。配成任何数字输入模式都会让施密特
+  *      触发器介入，采样值被钳位，现象是"读数永远是 0 或 4095"。
+  *   2. ADCCLK 由 PCLK2 分频而来，上限 14MHz。库的 IS_RCC_ADCCLK 只查
+  *      取值合法、不查频率，超频时库不报错，只表现为精度变差。
+  *   3. ADC1 与 ADC2 **共用一个中断通道** ADC1_2_IRQn，多个实例只会有
+  *      一个 ADC1_2_IRQHandler，内部按实例分派。
+  ******************************************************************************
+  */
+
+#ifndef __BSP_ADC_H
+#define __BSP_ADC_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "stm32f10x.h"
+
+/* Exported types ------------------------------------------------------------*/
+/* Exported constants --------------------------------------------------------*/
+/* Exported macro ------------------------------------------------------------*/
+/* Exported functions ------------------------------------------------------- */
+
+/**
+  * @brief  初始化全部已配置的 ADC 实例。
+  * @note   每个实例的顺序：**时钟 → ADCCLK 分频 → ADC_Init → 通道序列
+  *         → 看门狗 → 中断使能 → 校准 → ADC_Cmd**。
+  *
+  *         校准必须在 ADC_Cmd 之前完成：库里 ADC_ResetCalibration /
+  *         ADC_StartCalibration 写的是 CR2 的 RSTCAL/CAL 位，而 ADC_Cmd
+  *         只是打开 ADON。先开 ADON 再校准同样能工作，但校准期间
+  *         ADC 已经在采样，第一次转换的结果没有意义。
+  *
+  *         必须在 bsp_gpio_init() **之后**调用 —— 引脚要先配成模拟输入，
+  *         否则采样电容接的是数字输入缓冲，读数无意义。
+{% if ctx.adc_configs %}
+  *
+  *         本次配置了 {{ ctx.adc_configs | length }} 个实例：
+{% for adc in ctx.adc_configs %}
+  *           {{ adc.instance }}（{{ adc.sequence_length }} 通道{% if adc.label %}，{{ adc.label }}{% endif %}）
+{% endfor %}
+{% else %}
+  *
+  *         本次没有配置任何 ADC，本函数是空实现。
+{% endif %}
+  * @param  None
+  * @retval None
+  */
+void bsp_adc_init(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __BSP_ADC_H */
+
+/******************* (C) COPYRIGHT 2011 STMicroelectronics *****END OF FILE****/

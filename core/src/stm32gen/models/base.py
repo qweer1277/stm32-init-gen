@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from stm32gen.models.adc import AdcConfig
 from stm32gen.models.afio import AfioConfig
 from stm32gen.models.chip import CHIPS, ChipId, ChipSpec, get_chip
 from stm32gen.models.enums import UsartInstance
@@ -75,6 +76,13 @@ class Stm32Config(BaseModel):
         default_factory=list,
         description="定时器配置。可用实例为 TIM1~TIM4（中容量只有这四个）",
     )
+    adc: list[AdcConfig] = Field(
+        default_factory=list,
+        description=(
+            "ADC 配置。可用实例为 ADC1/ADC2（中容量没有 ADC3）。"
+            "ADC1 与 ADC2 共享 ADC1_2_IRQn，多个实例只会生成一个中断服务函数"
+        ),
+    )
 
     # -- 派生属性 --------------------------------------------------------
 
@@ -121,7 +129,7 @@ class Stm32Config(BaseModel):
 
     @property
     def used_ports(self) -> list[str]:
-        """配置里实际用到的端口字母（含 USART / EXTI / TIM 引脚），已排序去重。
+        """配置里实际用到的端口字母（含 USART / EXTI / TIM / ADC 引脚），已排序去重。
 
         这个属性决定要生成哪些 ``RCC_APB2Periph_GPIOx`` 时钟使能，
         漏掉任何一个都会让那个端口的 ``GPIO_Init`` 无效 ——
@@ -136,6 +144,11 @@ class Stm32Config(BaseModel):
         for timer in self.tim:
             for channel in timer.channels:
                 if channel.needs_gpio:
+                    letters.add(channel.port.letter)
+        for adc in self.adc:
+            for channel in adc.channels:
+                # 内部通道（16/17）没有引脚，needs_gpio 恒为假不会进这里
+                if channel.needs_gpio and channel.port is not None:
                     letters.add(channel.port.letter)
         # 过滤掉占位符 "?"（引脚未知时可能出现）
         return sorted(letter for letter in letters if letter.isalpha())
@@ -285,6 +298,29 @@ class Stm32Config(BaseModel):
                 if not spec.has_pin(channel.port.letter, channel.pin):
                     raise ValueError(
                         f"tim[{index}] 的 {channel.channel.value} 选了引脚 "
+                        f"{channel.pin_name}，但 {spec.name} 的 "
+                        f"GPIO{channel.port.letter} 只引出引脚 "
+                        f"{sorted(spec.ports.get(channel.port.letter, ()))}"
+                    )
+
+        # ADC 实例必须存在（中容量只有 ADC1/ADC2，没有 ADC3）
+        for index, adc in enumerate(self.adc):
+            if not spec.has_adc(adc.instance.value):
+                raise ValueError(
+                    f"adc[{index}] 配置了 {adc.instance.value}，但 {spec.name}"
+                    f"（{spec.package}）只有 "
+                    f"{'、'.join(spec.adc_instances) or '没有任何 ADC'}。"
+                    "ADC3 只在大容量/互联型上才有"
+                )
+
+        # ADC 的模拟输入引脚必须存在
+        for index, adc in enumerate(self.adc):
+            for channel in adc.channels:
+                if not channel.needs_gpio or channel.port is None:
+                    continue
+                if not spec.has_pin(channel.port.letter, channel.pin):
+                    raise ValueError(
+                        f"adc[{index}] 的 {channel.channel.label} 选了引脚 "
                         f"{channel.pin_name}，但 {spec.name} 的 "
                         f"GPIO{channel.port.letter} 只引出引脚 "
                         f"{sorted(spec.ports.get(channel.port.letter, ()))}"

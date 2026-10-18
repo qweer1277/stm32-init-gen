@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 __version__ = "0.1.0"
@@ -18,7 +19,16 @@ __version__ = "0.1.0"
 # 暴露出来，很难倒推到这里。现在改为必须显式设置环境变量
 # STM32_STDLIB_ROOT，未设置时由调用方给出明确的引导错误
 # （见 cli.py 的 stdlib_root() 与 compile_check.py）。
+#
+# 取值是空字符串而不是 None：它同时被 argparse 的 default= 与
+# os.environ.get 的默认值使用，两处都要求 str。判断「有没有配置」请一律走
+# configured_stdlib_root()，不要自己 Path(DEFAULT_STDLIB_ROOT).is_dir() ——
+# Path("") 会解析成当前目录 "."，那个目录永远存在，于是「未配置」会被
+# 误判成「配置好了」，然后拿当前目录当标准库根去扫。
 DEFAULT_STDLIB_ROOT = ""
+
+# 环境变量名：覆盖 DEFAULT_STDLIB_ROOT 的唯一途径
+STDLIB_ROOT_ENV = "STM32_STDLIB_ROOT"
 
 # 默认输出目录的目录名：与源码树同级，见 default_out_dir()
 OUTPUT_DIR_NAME = "stm32-init-gen-output"
@@ -51,10 +61,26 @@ def default_out_dir() -> str:
     return str(root.parent / OUTPUT_DIR_NAME)
 
 
+def configured_stdlib_root() -> Path | None:
+    """返回已配置且**确实存在**的标准库根目录；未配置或不存在时返回 ``None``。
+
+    这是判断「标准库可用吗」的唯一入口。返回值是 ``None`` 而不是 ``Path("")``，
+    因为后者会解析成当前目录 ``.`` —— 一个永远 ``is_dir()`` 为真的路径，
+    会让所有「没配置就跳过 / 就报引导错误」的分支静默失效。
+    """
+    configured = os.environ.get(STDLIB_ROOT_ENV) or DEFAULT_STDLIB_ROOT
+    if not configured:
+        return None
+    root = Path(configured)
+    return root if root.is_dir() else None
+
+
 __all__ = [
     "__version__",
     "DEFAULT_STDLIB_ROOT",
     "OUTPUT_DIR_NAME",
+    "STDLIB_ROOT_ENV",
+    "configured_stdlib_root",
     "default_out_dir",
     "project_root",
 ]

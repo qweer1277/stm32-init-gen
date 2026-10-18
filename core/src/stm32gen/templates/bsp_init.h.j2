@@ -22,6 +22,7 @@
   *   bsp_exti.h   外部中断（EXTI）线
   *   bsp_usart.h  USART 实例
   *   bsp_tim.h    定时器（TIM）
+  *   bsp_adc.h    模数转换（ADC）
   *   bsp_nvic.h   NVIC 优先级分组与通道
   *   bsp_it.h     中断服务函数
   * 为了让业务代码只需 include 一个头文件，下面把它们一并包含进来。
@@ -44,6 +45,7 @@ extern "C" {
 #include "bsp_exti.h"
 #include "bsp_usart.h"
 #include "bsp_tim.h"
+#include "bsp_adc.h"
 #include "bsp_nvic.h"
 
 /* Exported types ------------------------------------------------------------*/
@@ -53,7 +55,8 @@ extern "C" {
 
 /**
   * @brief  初始化全部已配置的外设。
-  * @note   顺序不可调换：**时钟 → GPIO → USART → NVIC**。
+  * @note   顺序不可调换：**时钟 → 重映射 → GPIO → EXTI → USART → TIM
+  *         → ADC → NVIC**。
   *         时钟必须最先（否则后续寄存器写入无效），
   *         NVIC 放在最后（中断通道开启时外设已配置完毕，避免提前进中断）。
   *

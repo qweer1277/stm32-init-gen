@@ -44,6 +44,7 @@ LIB_PREFIXES = (
     "FLASH_",
     "AFIO_",
     "EXTI_",
+    "ADC_",
     "IS_",
     "SysTick_",
     "SCB_",
@@ -53,6 +54,7 @@ LIB_PREFIXES = (
 PERIPHERAL_INSTANCES = {
     "GPIOA", "GPIOB", "GPIOC", "GPIOD", "GPIOE", "GPIOF", "GPIOG",
     "USART1", "USART2", "USART3", "UART4", "UART5",
+    "ADC1", "ADC2", "ADC3",
     "AFIO", "EXTI", "RCC", "NVIC", "SCB",
 }
 
@@ -85,9 +87,9 @@ EXEMPT = {
 #     GPIO_InitStructure.GPIO_Pin = GPIO_Pin_13;
 #     GPIO_Init(GPIOC, &GPIO_InitStructure);
 #
-# 它们以 ``GPIO_`` / ``USART_`` / ``NVIC_`` 前缀开头，会被 ``is_lib_symbol``
-# 选中，而符号表里当然查不到（库不可能定义一个叫这个名字的宏）——
-# 不豁免就会对**完全正确的 ST 惯例写法**误报「编造符号」。
+# 它们以 ``GPIO_`` / ``USART_`` / ``NVIC_`` / ``ADC_`` 等前缀开头，会被
+# ``is_lib_symbol`` 选中，而符号表里当然查不到（库不可能定义一个叫这个名字
+# 的宏）—— 不豁免就会对**完全正确的 ST 惯例写法**误报「编造符号」。
 #
 # 用显式白名单而不是「``*_InitStructure`` 结尾都放行」的正则：后者等于给
 # 任何 ``GPIO_WhateverInitStructure`` 开后门，护栏会被绕过。白名单只有
@@ -100,6 +102,7 @@ STRUCT_VAR_NAMES = frozenset(
         "EXTI_InitStructure",
         "TIM_TimeBaseStructure",
         "TIM_OCInitStructure",
+        "ADC_InitStructure",
     }
 )
 

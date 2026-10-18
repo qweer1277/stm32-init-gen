@@ -89,10 +89,12 @@ OUTPUT_SPECS: tuple[tuple[str, str, str], ...] = (
     ("bsp_usart.c.j2", "bsp_usart.c", "实例时钟、USART_Init、中断使能、USART_Cmd"),
     ("bsp_tim.h.j2", "bsp_tim.h", "TIM 接口"),
     ("bsp_tim.c.j2", "bsp_tim.c", "时基、输出比较、预装载、主输出、中断使能"),
+    ("bsp_adc.h.j2", "bsp_adc.h", "ADC 接口"),
+    ("bsp_adc.c.j2", "bsp_adc.c", "ADCCLK 分频、ADC_Init、通道序列、看门狗、校准、中断使能"),
     ("bsp_nvic.h.j2", "bsp_nvic.h", "NVIC 接口"),
     ("bsp_nvic.c.j2", "bsp_nvic.c", "优先级分组与各通道 NVIC_Init"),
     ("bsp_it.h.j2", "bsp_it.h", "中断服务函数声明"),
-    ("bsp_it.c.j2", "bsp_it.c", "USART / EXTI / TIM 中断服务函数骨架"),
+    ("bsp_it.c.j2", "bsp_it.c", "USART / EXTI / TIM / ADC 中断服务函数骨架"),
     ("main.c.j2", "main.c", "最小可编译的 main，调用 bsp_init()"),
 )
 
@@ -142,14 +144,23 @@ def generate(
         and not context.has_usart
         and not context.has_exti
         and not context.has_tim
+        and not context.has_adc
     ):
-        result.notes.append("配置里没有任何 GPIO / USART / EXTI / TIM，初始化函数体为空")
+        result.notes.append(
+            "配置里没有任何 GPIO / USART / EXTI / TIM / ADC，初始化函数体为空"
+        )
     if context.has_usart and not context.has_nvic:
         result.notes.append("USART 未使能任何中断，因此没有生成 NVIC 配置与中断服务函数")
     if context.has_exti and not context.has_nvic:
         result.notes.append("EXTI 全部为事件模式（不产生中断），因此没有生成 NVIC 配置")
     if context.has_tim and not context.has_nvic:
         result.notes.append("TIM 未使能任何中断，因此没有生成 NVIC 配置")
+    if context.has_adc and not context.has_nvic:
+        result.notes.append("ADC 未使能任何中断，因此没有生成 NVIC 配置")
+    if context.has_adc and len(context.adc_handlers) == 1 and len(context.adc_configs) > 1:
+        result.notes.append(
+            "ADC1 与 ADC2 共享 ADC1_2_IRQn，已合并为单个中断服务函数"
+        )
     if context.has_nvic and not context.has_interrupts:
         result.notes.append(
             "NVIC 配了通道但没有任何外设使能中断，中断服务函数未生成"

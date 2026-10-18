@@ -282,6 +282,8 @@ ALL_GENERATED_FILES = (
     "bsp_usart.c",
     "bsp_tim.h",
     "bsp_tim.c",
+    "bsp_adc.h",
+    "bsp_adc.c",
     "bsp_nvic.h",
     "bsp_nvic.c",
     "bsp_it.h",
@@ -302,12 +304,12 @@ def test_generate_writes_files(
     assert main(["generate", str(demo_json), "-o", str(out_dir)]) == EXIT_OK
 
     names = {path.name for path in out_dir.iterdir()}
-    assert len(names) == 19
+    assert len(names) == len(ALL_GENERATED_FILES)
     assert names == set(ALL_GENERATED_FILES)
 
     captured = capsys.readouterr()
     assert "反编造自检通过" in captured.out
-    assert "已写入 19 个文件" in captured.out
+    assert f"已写入 {len(ALL_GENERATED_FILES)} 个文件" in captured.out
 
 
 def test_generate_dry_run_writes_nothing(
@@ -377,7 +379,7 @@ def test_generate_no_overwrite_skips(
     assert main(["generate", str(demo_json), "-o", str(out_dir), "--no-overwrite"]) == EXIT_OK
     out = capsys.readouterr().out
     assert "已写入 0 个文件" in out
-    assert "跳过 19 个已存在文件" in out
+    assert f"跳过 {len(ALL_GENERATED_FILES)} 个已存在文件" in out
 
 
 def test_generate_no_overwrite_writes_new_files(
@@ -390,7 +392,7 @@ def test_generate_no_overwrite_writes_new_files(
 
     assert main(["generate", str(demo_json), "-o", str(out_dir), "--no-overwrite"]) == EXIT_OK
     out = capsys.readouterr().out
-    assert "已写入 18 个文件" in out
+    assert f"已写入 {len(ALL_GENERATED_FILES) - 1} 个文件" in out
     assert "跳过 1 个" in out
     # 手写内容必须保留
     assert (out_dir / "bsp_init.c").read_text(encoding="utf-8") == "// 手写的，别覆盖"
@@ -721,6 +723,62 @@ def test_compile_reports_diagnostics(
     assert "编译验证未通过" in captured.err
 
 
+def test_compile_without_stdlib_root_explains_instead_of_dumping_errors(
+    demo_json: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch
+) -> None:
+    """标准库没配时必须说清原因，不能甩一串「找不到头文件」。
+
+    没有这个前置检查时，编译器会为每个 bsp_*.h 各报一条
+    ``'stm32f10x.h' file not found``（本机实测 11 条）。真正的根因
+    （环境变量没设）被埋在这 11 条下面，用户会去查自己生成的代码。
+    """
+    from stm32gen.compile_check import ToolchainKind, find_toolchain
+
+    native = find_toolchain(prefer=ToolchainKind.ARMCLANG) or find_toolchain(
+        prefer=ToolchainKind.ARMCC
+    )
+    if native is None:
+        pytest.skip("本机没有真实 ARM 编译器")
+
+    monkeypatch.setattr("stm32gen.cli.configured_stdlib_root", lambda: None)
+
+    out_dir = tmp_path / "out"
+    main(["generate", str(demo_json), "-o", str(out_dir)])
+    capsys.readouterr()
+
+    code = main(["compile", str(demo_json), "-o", str(out_dir)])
+
+    assert code == EXIT_IO
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "STM32_STDLIB_ROOT" in combined
+    assert "未设置标准库代码根目录" in combined
+    # 关键：不该出现「找不到头文件」这类把人带偏的诊断
+    assert "file not found" not in combined, combined
+    assert "stm32f10x.h" not in combined, combined
+
+
+def test_compile_with_stdlib_root_still_works(
+    demo_json: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """配了标准库时前置检查不能误伤，编译要照常跑通。"""
+    from stm32gen import configured_stdlib_root
+    from stm32gen.compile_check import ToolchainKind, find_toolchain
+
+    native = find_toolchain(prefer=ToolchainKind.ARMCLANG) or find_toolchain(
+        prefer=ToolchainKind.ARMCC
+    )
+    if native is None or configured_stdlib_root() is None:
+        pytest.skip("本机没有真实 ARM 编译器或未配标准库")
+
+    out_dir = tmp_path / "out"
+    main(["generate", str(demo_json), "-o", str(out_dir)])
+    capsys.readouterr()
+
+    assert main(["compile", str(demo_json), "-o", str(out_dir)]) == EXIT_OK
+    assert "编译通过" in capsys.readouterr().out
+
+
 def test_selftest_reports_toolchain_status(capsys: pytest.CaptureFixture[str]) -> None:
     """自检要说明工具链状态。
 
@@ -812,14 +870,14 @@ def test_selftest_warns_when_only_host_available(
 
 
 def test_layout_defaults_to_split(tmp_path: Path, capsys) -> None:
-    """不指定 --layout 时仍是 19 个文件，保持既有用法不变。"""
+    """不指定 --layout 时仍是按外设分文件，保持既有用法不变。"""
     config_path = tmp_path / "cfg.json"
     save(config_path, make_demo_config())
     out = tmp_path / "out"
 
     code = main(["generate", str(config_path), "-o", str(out), "--no-info"])
     assert code == EXIT_OK
-    assert len(list(out.glob("*"))) == 19
+    assert len(list(out.glob("*"))) == len(ALL_GENERATED_FILES)
     assert (out / "bsp_gpio.c").exists()
 
 

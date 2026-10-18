@@ -24,6 +24,14 @@ CLI 读 JSON/YAML → 构造这里的模型；生成器只接受 ``Stm32Config``
 
 from __future__ import annotations
 
+from stm32gen.models.adc import (
+    ADC_SEQUENCE_MAX,
+    ADC_THRESHOLD_MAX,
+    AdcChannelConfig,
+    AdcConfig,
+)
+from stm32gen.models.adc_pins import DEFAULT_ADC_PINS
+from stm32gen.models.adc_pins import default_pin as adc_default_pin
 from stm32gen.models.afio import AfioConfig
 from stm32gen.models.base import (
     CONFIG_VERSION,
@@ -33,8 +41,19 @@ from stm32gen.models.base import (
 )
 from stm32gen.models.chip import CHIPS, ChipId, ChipSpec, get_chip
 from stm32gen.models.enums import (
+    ADC_CHANNEL_MAX,
+    ADC_CHANNEL_MIN,
+    ADC_INTERNAL_CHANNEL_MIN,
     EXTI_EXTERNAL_LINE_MAX,
     EXTI_EXTERNAL_LINE_MIN,
+    AdcChannel,
+    AdcDataAlign,
+    AdcInstance,
+    AdcInterrupt,
+    AdcMode,
+    AdcPrescaler,
+    AdcSampleTime,
+    AdcTrigger,
     AfioSwjRemap,
     ExtiMode,
     ExtiTrigger,
@@ -101,8 +120,14 @@ from stm32gen.models.usart import UsartConfig
 verify_all(extra=RCC_ENUMS)
 
 __all__ = [
+    "ADC_CHANNEL_MAX",
+    "ADC_CHANNEL_MIN",
+    "ADC_INTERNAL_CHANNEL_MIN",
+    "ADC_SEQUENCE_MAX",
+    "ADC_THRESHOLD_MAX",
     "CHIPS",
     "CONFIG_VERSION",
+    "DEFAULT_ADC_PINS",
     "EXTI_EXTERNAL_LINE_MAX",
     "EXTI_EXTERNAL_LINE_MIN",
     "RCC_ENUMS",
@@ -111,6 +136,16 @@ __all__ = [
     "TimTimingSolution",
     "solve_period",
     "solve_timing",
+    "AdcChannelConfig",
+    "AdcChannel",
+    "AdcConfig",
+    "AdcDataAlign",
+    "AdcInstance",
+    "AdcInterrupt",
+    "AdcMode",
+    "AdcPrescaler",
+    "AdcSampleTime",
+    "AdcTrigger",
     "AfioConfig",
     "AfioSwjRemap",
     "AhbPrescaler",
@@ -164,4 +199,5 @@ __all__ = [
     "get_chip",
     "make_demo_config",
     "verify_all",
+    "adc_default_pin",
 ]

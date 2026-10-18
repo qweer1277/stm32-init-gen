@@ -76,7 +76,7 @@ python -m stm32gen generate examples\demo.json --compile
 | `generate` / `validate` | 正常工作 |
 | `selftest` | 提示「标准库目录未配置（不影响生成）」，不判失败 |
 | `--compile` | 报错并提示怎么设置 |
-| `pytest` | 跳过 85 项需要库源码的用例，其余 536 项照跑 |
+| `pytest` | 跳过 87 项需要库源码的用例，其余 641 项照跑 |
 
 ## 生成产物
 
@@ -114,8 +114,8 @@ python -m stm32gen generate examples\demo.json --compile
 ## 测试
 
 ```powershell
-cd core;  python -m pytest -q    # 621 项（无标准库源码时 536 passed, 85 skipped）
-cd ..\gui; python -m pytest -q   # 160 项，offscreen 平台
+cd core;  python -m pytest -q    # 728 项（无标准库源码时 641 passed, 87 skipped）
+cd ..\gui; python -m pytest -q   # 179 项，offscreen 平台
 ```
 
 代码风格由 ruff 把关（`line-length = 100`，`select = ["E", "F", "W", "I", "UP", "B"]`）。

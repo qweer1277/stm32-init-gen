@@ -430,6 +430,109 @@ class TimConfig:
         return bool(self.clock_source)
 
 
+@dataclass(frozen=True)
+class AdcChannelInfo:
+    """ADC 规则组序列里一条通道的生成信息。"""
+
+    channel: str  # "ADC_Channel_3"
+    channel_label: str  # "通道 3"
+    rank: int  # 1~16，即序列中的位置
+    sample_time: str  # "ADC_SampleTime_55Cycles5"
+    sample_cycles: str  # "55.5"（字符串，直接进注释）
+    is_internal: bool  # 温度传感器 / Vrefint，不占引脚
+    pin_name: str = ""  # "PA3"，未指定引脚时为空
+    pin_port: str = ""  # "GPIOA"
+    pin_macro: str = ""  # "GPIO_Pin_3"
+    label: str = ""
+
+    @property
+    def needs_gpio(self) -> bool:
+        return bool(self.pin_name)
+
+
+@dataclass(frozen=True)
+class AdcConfig:
+    """一个 ADC 实例的生成信息（``bsp_adc.c``）。
+
+    字段全是字符串/数值/布尔，模板拿到的就是最终要写进 C 代码的值。
+    """
+
+    instance: str  # "ADC1"
+    clock_macro: str  # "RCC_APB2Periph_ADC1"
+    mode: str  # "ADC_Mode_Independent"
+    mode_name: str  # "INDEPENDENT"
+    prescaler: str  # "RCC_PCLK2_Div6"
+    prescaler_label: str  # "PCLK2 ÷6"
+    # ADC_Init 的四个字段
+    scan_mode: bool
+    continuous: bool
+    data_align: str  # "ADC_DataAlign_Right"
+    external_trigger: str  # "ADC_ExternalTrigConv_None"
+    sequence_length: int  # ADC_NbrOfChannel
+    channels: tuple[AdcChannelInfo, ...]
+    interrupts: tuple[str, ...]  # ("ADC_IT_EOC",)
+    irqn: str  # "ADC1_2_IRQn"
+    label: str = ""
+
+    # 模拟看门狗
+    watchdog: bool = False
+    watchdog_high: int = 0xFFF
+    watchdog_low: int = 0
+    # 看门狗监控的通道宏。必须单独给出：不调 SingleChannelConfig 时库按通道 0 处理
+    watchdog_channel: str = ""
+    # 校准
+    calibration: bool = True
+    calibration_timeout_loops: int = 0x1000
+    # 软件触发需要生成 ADC_SoftwareStartConvCmd
+    software_trigger: bool = False
+    # 频率推导（进注释供核对）
+    clock_note: str = ""
+    # 中断标志宏（ISR 清挂起位与判标志用），与 interrupts 一一对应
+    interrupt_flags: tuple[str, ...] = ()
+
+    @property
+    def has_channels(self) -> bool:
+        return bool(self.channels)
+
+    @property
+    def has_interrupts(self) -> bool:
+        return bool(self.interrupts)
+
+    @property
+    def needs_gpio(self) -> bool:
+        """是否有通道指定了引脚。"""
+        return any(item.needs_gpio for item in self.channels)
+
+    @property
+    def needs_calibration(self) -> bool:
+        return self.calibration
+
+
+@dataclass(frozen=True)
+class AdcHandler:
+    """一个 ADC 中断服务函数的生成信息。
+
+    **ADC1 与 ADC2 共用 ``ADC1_2_IRQn``**，所以正常情况下
+    ``instances`` 会有 1~2 项。生成**一个** handler、内部按实例分派 ——
+    与 ``ExtiHandler`` 处理共享通道的方式一致：生成两个同名函数会
+    直接重复定义编译失败。
+    """
+
+    handler: str  # "ADC1_2_IRQHandler"
+    irqn: str  # "ADC1_2_IRQn"
+    instances: tuple[AdcConfig, ...]
+
+    @property
+    def is_shared(self) -> bool:
+        """是否多个实例共享（ISR 需要按实例分派）。"""
+        return len(self.instances) > 1
+
+    @property
+    def description(self) -> str:
+        """覆盖的实例名，如 ``ADC1/ADC2``。"""
+        return "/".join(item.instance for item in self.instances)
+
+
 @dataclass
 class TemplateContext:
     """渲染模板用的完整上下文。"""
@@ -473,6 +576,14 @@ class TemplateContext:
     tim_clocks: list[ClockEnable] = field(default_factory=list)
     tim_configs: list[TimConfig] = field(default_factory=list)
     tim_remaps: list[PinRemap] = field(default_factory=list)
+
+    # ADC（bsp_adc.h/c）
+    # 全部分频一致时只有一条 RCC_ADCCLKConfig —— 校验层会保证这一点。
+    adc_clock: ClockEnable | None = None
+    adc_prescaler: str = ""
+    adc_prescaler_label: str = ""
+    adc_configs: list[AdcConfig] = field(default_factory=list)
+    adc_handlers: list[AdcHandler] = field(default_factory=list)
 
     # 中断服务函数（bsp_it.h/c）
     handlers: list[UsartInterruptHandler] = field(default_factory=list)
@@ -530,14 +641,19 @@ class TemplateContext:
         return bool(self.tim_configs)
 
     @property
+    def has_adc(self) -> bool:
+        return bool(self.adc_configs)
+
+    @property
     def has_interrupts(self) -> bool:
-        """是否有任何中断服务函数（USART / EXTI / TIM）。
+        """是否有任何中断服务函数（USART / EXTI / TIM / ADC）。
 
         ``bsp_it.c`` 的整体空骨架判断用它 —— 只看 USART 的 handlers
         会让"只有 EXTI 中断"的配置生成一份空的中断文件。
         """
-        return bool(self.handlers or self.exti_handlers) or any(
-            item.has_interrupts for item in self.tim_configs
+        return (
+            bool(self.handlers or self.exti_handlers or self.adc_handlers)
+            or any(item.has_interrupts for item in self.tim_configs)
         )
 
     @property
@@ -1229,8 +1345,114 @@ def _build_tim(config: Stm32Config) -> list[TimConfig]:
     return result
 
 
-def _collect_symbols(
-    rcc: RccSetup,
+def _build_adc_clock(config: Stm32Config) -> ClockEnable | None:
+    """ADC 模块的实例时钟（APB2）。
+
+    ADC1 与 ADC2 都在 APB2 上，同一条语句里合并。
+
+    **ADCCLK 的分频不在这里** —— 它由 ``RCC_ADCCLKConfig`` 单独一条语句
+    设置（见 ``TemplateContext.adc_prescaler``），因为它是**全局一份**
+    的预分频（CFGR.ADCPRE），不属于某个实例。
+    """
+    macros: list[str] = []
+    for adc in config.adc:
+        if adc.clock_macro not in macros:
+            macros.append(adc.clock_macro)
+    if not macros:
+        return None
+    return ClockEnable(
+        bus="APB2",
+        function="RCC_APB2PeriphClockCmd",
+        macros=tuple(macros),
+        comment="ADC 实例（ADC1/ADC2 都挂在 APB2）",
+    )
+
+
+def _build_adc(config: Stm32Config) -> tuple[list[AdcConfig], list[AdcHandler]]:
+    """构造 ADC 配置与中断服务函数。
+
+    返回 ``(全部实例, 按中断通道分组后的 handler)``。
+
+    分组与 ``_build_exti`` 同一个理由：ADC1 与 ADC2 共用
+    ``ADC1_2_IRQn``，一个通道只能有一个 ISR —— 生成两个同名函数会
+    直接编译失败（重复定义）。
+    """
+    tree = compute_clock_tree(config.hse_hz, config.rcc)
+    pclk2 = tree.pclk2_hz
+
+    result: list[AdcConfig] = []
+    for adc in config.adc:
+        channels: list[AdcChannelInfo] = []
+        for rank, channel in enumerate(adc.channels, start=1):
+            channels.append(
+                AdcChannelInfo(
+                    channel=channel.channel.value,
+                    channel_label=channel.channel.label,
+                    rank=rank,
+                    sample_time=channel.sample_time.value,
+                    sample_cycles=f"{channel.sample_time.cycles:g}",
+                    is_internal=channel.is_internal,
+                    pin_name=channel.pin_name,
+                    pin_port=f"GPIO{channel.port.letter}" if channel.needs_gpio else "",
+                    pin_macro=f"GPIO_Pin_{channel.pin}" if channel.needs_gpio else "",
+                    label=channel.label,
+                )
+            )
+
+        result.append(
+            AdcConfig(
+                instance=adc.instance.value,
+                clock_macro=adc.clock_macro,
+                mode=adc.mode.value,
+                mode_name=adc.mode.name,
+                prescaler=adc.prescaler.value,
+                prescaler_label=adc.prescaler.label,
+                scan_mode=adc.uses_scan_mode,
+                continuous=adc.continuous,
+                data_align=adc.data_align.value,
+                external_trigger=adc.trigger.value,
+                sequence_length=adc.sequence_length,
+                channels=tuple(channels),
+                interrupts=tuple(item.value for item in adc.interrupts),
+                irqn=adc.irqn,
+                label=adc.label,
+                watchdog=adc.watchdog,
+                watchdog_high=adc.watchdog_high,
+                watchdog_low=adc.watchdog_low,
+                watchdog_channel=adc.effective_watchdog_channel_macro,
+                calibration=adc.calibration,
+                calibration_timeout_loops=adc.calibration_timeout_loops,
+                software_trigger=adc.trigger.is_software,
+                clock_note=adc.describe_clock(pclk2),
+                interrupt_flags=tuple(item.flag for item in adc.interrupts),
+            )
+        )
+
+    # 按 handler 名分组。ADC1/ADC2 都返回 ADC1_2_IRQHandler，所以只要
+    # 两个实例都使能了中断，就会并进同一个 handler。
+    by_handler: dict[str, list[AdcConfig]] = {}
+    order: list[str] = []
+    for item in result:
+        if not item.has_interrupts:
+            continue
+        handler = item.irqn.replace("_IRQn", "_IRQHandler")
+        if handler not in by_handler:
+            by_handler[handler] = []
+            order.append(handler)
+        by_handler[handler].append(item)
+
+    handlers = [
+        AdcHandler(
+            handler=name,
+            irqn=by_handler[name][0].irqn,
+            instances=tuple(by_handler[name]),
+        )
+        for name in order
+    ]
+    return result, handlers
+
+
+def _collect_symbols(    rcc: RccSetup,
     clock_enables: list[ClockEnable],
     gpio_configs: list[GpioConfig],
     remaps: list[PinRemap],
@@ -1243,6 +1465,9 @@ def _collect_symbols(
     exti_handlers: list[ExtiHandler] | None = None,
     tim_configs: list[TimConfig] | None = None,
     tim_clocks: list[ClockEnable] | None = None,
+    adc_configs: list[AdcConfig] | None = None,
+    adc_clock: ClockEnable | None = None,
+    adc_prescaler: str = "",
 ) -> set[str]:
     """收集生成代码里用到的全部标准库符号。
 
@@ -1262,6 +1487,7 @@ def _collect_symbols(
     exti_handlers = exti_handlers or []
     tim_configs = tim_configs or []
     tim_clocks = tim_clocks or []
+    adc_configs = adc_configs or []
 
     used: set[str] = set()
 
@@ -1401,6 +1627,58 @@ def _collect_symbols(
         used.add(item.function)
         used.update(item.macros)
 
+    # ── ADC（bsp_adc.c）──
+    if adc_configs:
+        used.update(
+            {
+                "ADC_Init",
+                "ADC_InitTypeDef",
+                "ADC_Cmd",
+                "ADC_RegularChannelConfig",
+            }
+        )
+    for adc in adc_configs:
+        used.add(adc.mode)
+        used.add(adc.data_align)
+        used.add(adc.external_trigger)
+        # 通道宏与采样时间宏：ADC_RegularChannelConfig 的参数位置
+        for channel in adc.channels:
+            used.add(channel.channel)
+            used.add(channel.sample_time)
+        if adc.watchdog:
+            used.update(
+                {
+                    "ADC_AnalogWatchdogCmd",
+                    "ADC_AnalogWatchdogThresholdsConfig",
+                    # 不登记下面这个函数与通道宏，模板里的调用就会被反编造
+                    # 护栏判成编造符号 —— 参数位置上的宏同样要登记。
+                    "ADC_AnalogWatchdogSingleChannelConfig",
+                    "ADC_AnalogWatchdog_SingleRegEnable",
+                    adc.watchdog_channel,
+                }
+            )
+        if adc.software_trigger:
+            used.add("ADC_SoftwareStartConvCmd")
+        if adc.needs_calibration:
+            used.update(
+                {
+                    "ADC_ResetCalibration",
+                    "ADC_GetResetCalibrationStatus",
+                    "ADC_StartCalibration",
+                    "ADC_GetCalibrationStatus",
+                }
+            )
+        if adc.has_interrupts:
+            used.update({"ADC_ITConfig", "ADC_GetITStatus", "ADC_ClearITPendingBit"})
+        used.update(adc.interrupts)
+
+    if adc_clock is not None:
+        used.add(adc_clock.function)
+        used.update(adc_clock.macros)
+    if adc_prescaler and adc_configs:
+        # RCC_ADCCLKConfig 只在有 ADC 时才生成
+        used.update({"RCC_ADCCLKConfig", adc_prescaler})
+
     # 时钟宏
     for item in clock_enables:
         used.update(item.macros)
@@ -1518,6 +1796,13 @@ def build_context(config: Stm32Config) -> TemplateContext:
     exti_lines, exti_handlers = _build_exti(config)
     tim_configs = _build_tim(config)
     tim_clocks = _build_tim_clock(config)
+    adc_clock = _build_adc_clock(config)
+    adc_configs, adc_handlers = _build_adc(config)
+    # ADCCLK 分频只有一份（RCC_CFGR.ADCPRE），取第一个实例的值。
+    # 校验层的 adc.prescaler_conflict 会拦住"多个实例分频不同"的配置，
+    # 所以这里不会静默丢掉某个值。
+    adc_prescaler = config.adc[0].prescaler.value if config.adc else ""
+    adc_prescaler_label = config.adc[0].prescaler.label if config.adc else ""
 
     tree = compute_clock_tree(config.hse_hz, config.rcc)
     clock_note = (
@@ -1556,6 +1841,11 @@ def build_context(config: Stm32Config) -> TemplateContext:
         exti_handlers=exti_handlers,
         tim_clocks=tim_clocks,
         tim_configs=tim_configs,
+        adc_clock=adc_clock,
+        adc_prescaler=adc_prescaler,
+        adc_prescaler_label=adc_prescaler_label,
+        adc_configs=adc_configs,
+        adc_handlers=adc_handlers,
         handlers=handlers,
         symbols_used=_collect_symbols(
             rcc_ctx,
@@ -1571,6 +1861,9 @@ def build_context(config: Stm32Config) -> TemplateContext:
             exti_handlers=exti_handlers,
             tim_configs=tim_configs,
             tim_clocks=tim_clocks,
+            adc_configs=adc_configs,
+            adc_clock=adc_clock,
+            adc_prescaler=adc_prescaler,
         ),
     )
 

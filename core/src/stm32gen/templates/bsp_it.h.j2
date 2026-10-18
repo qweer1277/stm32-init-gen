@@ -62,6 +62,18 @@ void {{ timer.irqn.replace("_IRQn", "_IRQHandler") }}(void);
 
 {% endif %}
 {% endfor %}
+{% for handler in ctx.adc_handlers %}
+/**
+  * @brief  {{ handler.handler }} ADC 中断服务函数（{{ handler.irqn }}）。
+{% if handler.is_shared %}
+  * @note   共享通道，覆盖 {{ handler.description }}。
+{% endif %}
+  * @param  None
+  * @retval None
+  */
+void {{ handler.handler }}(void);
+
+{% endfor %}
 #ifdef __cplusplus
 }
 #endif

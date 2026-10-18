@@ -182,24 +182,15 @@ def test_split_params(extractor) -> None:
 
 
 def test_probes_all_pass(extractor) -> None:
-    """完整跑一遍提取，58 项关键符号自检必须全通过。
+    """完整跑一遍提取，58 项关键符号自检必须全通过。"""
+    from stm32gen import configured_stdlib_root
 
-    标准库根目录从 ``STM32_STDLIB_ROOT`` 读（``DEFAULT_STDLIB_ROOT`` 已刻意
-    留空，见 ``stm32gen/__init__.py`` 的说明）。两者都为空时必须 skip ——
-    注意 ``Path("").is_dir()`` 是 True（空串等于当前目录），所以要先判空串，
-    不能只靠 ``is_dir()``。
-    """
-    import os
-
-    from stm32gen import DEFAULT_STDLIB_ROOT
-
-    configured = os.environ.get("STM32_STDLIB_ROOT", DEFAULT_STDLIB_ROOT)
-    if not configured:
-        pytest.skip("未设置 STM32_STDLIB_ROOT，跳过需要标准库源码的提取测试")
-
-    root = Path(configured)
-    if not root.is_dir():
-        pytest.skip(f"标准库目录不可用：{root}")
+    # 必须用 configured_stdlib_root() 而不是 Path(DEFAULT_STDLIB_ROOT)：
+    # 后者在未配置时得到 Path("")，即当前目录 "."，is_dir() 恒为真，
+    # 于是「没配置就跳过」会静默失效，改成拿当前目录当标准库根去扫。
+    root = configured_stdlib_root()
+    if root is None:
+        pytest.skip("标准库目录未配置（设置 STM32_STDLIB_ROOT 后才跑这条）")
 
     data = extractor.extract(root, set(extractor.DEFAULT_DEFINES))
     problems = extractor.run_probes(data)

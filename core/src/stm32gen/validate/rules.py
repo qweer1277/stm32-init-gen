@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from stm32gen.models import Stm32Config
 from stm32gen.models.enums import (
+    AdcPrescaler,
+    AdcTrigger,
     GpioMode,
     GpioSpeed,
     TimRemap,
@@ -61,6 +63,14 @@ REMAP_PINS: dict[tuple[str, UsartRemap], tuple[tuple[str, int], ...]] = {
     ("USART3", UsartRemap.USART3_PARTIAL): (("C", 10), ("C", 11)),
     ("USART3", UsartRemap.USART3_FULL): (("D", 8), ("D", 9)),
 }
+
+# ADCCLK 上限（Hz）。
+#
+# STM32F103 数据手册的 ADC 电气特性规定 ADCCLK 最大 14MHz。
+# **注意这不是库里的约束** —— ``IS_RCC_ADCCLK``（stm32f10x_rcc.h:429-430）
+# 只检查取值是不是四个分频宏之一，完全不看频率。所以超频时库不报错，
+# 现象是转换结果精度下降、通道间串扰，极难归因。
+ADC_CLOCK_MAX_HZ = 14_000_000
 
 
 # --------------------------------------------------------------------------
@@ -818,17 +828,19 @@ def check_gpio(config: Stm32Config) -> list[Issue]:
                 )
             )
 
-    # 5) 完全没有配置任何 GPIO 或 USART
+    # 5) 完全没有配置任何 GPIO 或外设
     if (
         not config.gpio
         and not config.usart
         and not config.exti
         and not config.tim
+        and not config.adc
     ):
         issues.append(
             info(
                 "config.empty",
-                "配置里没有任何 GPIO / USART / EXTI / TIM，生成的代码只包含空的初始化函数",
+                "配置里没有任何 GPIO / USART / EXTI / TIM / ADC，"
+                "生成的代码只包含空的初始化函数",
                 location="<根>",
                 hint="至少添加一个 GPIO 引脚或一个外设实例",
             )
@@ -1321,6 +1333,400 @@ def check_tim(config: Stm32Config) -> list[Issue]:
 
 
 # 全部规则，供 validate() 依次执行
+# （列表在文件末尾定义，见 ``ALL_RULES`` —— 这里只留说明。）
+
+
+# --------------------------------------------------------------------------
+# ADC
+# --------------------------------------------------------------------------
+
+
+def check_adc(config: Stm32Config) -> list[Issue]:
+    """ADC：ADCCLK 超频、双模式配对、共享中断、引脚核不了只能 WARN。
+
+    规则分级的原则和 ``check_tim`` 一致：**能用库里的 assert 证明的**给
+    ERROR，**只能靠数据手册判断的**给 WARNING 或 INFO —— 本环境
+    （``E:\\stm32初始化\\代码``）没有数据手册，见 ``models/adc_pins.py``。
+    """
+    issues: list[Issue] = []
+    tree = compute_clock_tree(config.hse_hz, config.rcc)
+    pclk2 = tree.pclk2_hz
+
+    # 1) 同一实例配了多次
+    seen: dict[str, int] = {}
+    for index, adc in enumerate(config.adc):
+        if adc.instance.value in seen:
+            issues.append(
+                error(
+                    "adc.duplicate_instance",
+                    f"{adc.name} 被配置了多次"
+                    f"（adc[{seen[adc.instance.value]}] 与 adc[{index}]）",
+                    location=f"adc[{index}]",
+                    hint="同一个 ADC 实例只能有一份配置",
+                    subjects=(adc.name,),
+                )
+            )
+        else:
+            seen[adc.instance.value] = index
+
+    # 2) ADCCLK 超频。
+    #
+    # 这条是**唯一一条能真正算出来、且有明确上限**的 ADC 硬件约束。
+    # 之所以只给 WARNING 而不是 ERROR：14MHz 是数据手册值，超了通常仍能
+    # 转换、只是精度与线性度变差，不会"必然产出不能用代码"。而工具
+    # 拿不到手册，把手册值当硬错误拦生成，风险比收益大。
+    for index, adc in enumerate(config.adc):
+        adcclk = adc.adc_clock_hz(pclk2)
+        if adcclk > ADC_CLOCK_MAX_HZ:
+            suggested = min(
+                (
+                    item
+                    for item in AdcPrescaler
+                    if pclk2 / item.divider <= ADC_CLOCK_MAX_HZ
+                ),
+                key=lambda item: item.divider,
+                default=None,
+            )
+            hint = (
+                f"PCLK2 {pclk2 / 1e6:g}MHz 至少要 ÷{pclk2 / ADC_CLOCK_MAX_HZ:.0f}"
+                f"（当前 {adc.prescaler.label}）"
+            )
+            if suggested is not None:
+                hint += (
+                    f"；建议改成分频 {suggested.label}"
+                    f"（ADCCLK {pclk2 / suggested.divider / 1e6:g}MHz）"
+                )
+            issues.append(
+                warning(
+                    "adc.clock_over_spec",
+                    f"{adc.name} 的 ADCCLK = {adcclk / 1e6:g}MHz，"
+                    f"超过 STM32F103 的 {ADC_CLOCK_MAX_HZ / 1e6:g}MHz 上限",
+                    location=f"adc[{index}].prescaler",
+                    hint=(
+                        hint + "。库的 IS_RCC_ADCCLK 只查取值合法、不查频率，"
+                        "所以超频不会报错，表现为精度下降与通道间串扰"
+                    ),
+                    subjects=(adc.name, adc.prescaler.value),
+                )
+            )
+        elif adcclk < ADC_CLOCK_MAX_HZ / 8:
+            # 分频过多不是错误，但换算出的采样率会低得让人意外
+            issues.append(
+                info(
+                    "adc.clock_far_below_max",
+                    f"{adc.name} 的 ADCCLK 只有 {adcclk / 1e6:g}MHz，"
+                    f"远低于 {ADC_CLOCK_MAX_HZ / 1e6:g}MHz 上限",
+                    location=f"adc[{index}].prescaler",
+                    hint="ADCCLK 越低采样越慢；不需要这么慢的话可以减小分频",
+                    subjects=(adc.name, adc.prescaler.value),
+                )
+            )
+
+    # 3) ADCCLK 分频是**全局一份**，两个实例必须一致。
+    #
+    # RCC 的 CFGR.ADCPRE 只有 2 位，被 ADC1 与 ADC2 共用。两次
+    # ``RCC_ADCCLKConfig`` 调用中后一次生效，前一次被静默覆盖 ——
+    # 用户配了两个不同的分频，生成代码里两行都在，实际只有一行有效。
+    # 这属于「看起来配了实际没生成」，报 ERROR。
+    dividers = {
+        adc.prescaler: [other for other in config.adc if other.prescaler is adc.prescaler]
+        for adc in config.adc
+    }
+    if len(dividers) > 1:
+        detail = "、".join(
+            f"{items[0].prescaler.label}（{'/'.join(i.name for i in items)}）"
+            for items in dividers.values()
+        )
+        issues.append(
+            error(
+                "adc.prescaler_conflict",
+                f"多个 ADC 实例配了不同的 ADCCLK 分频：{detail}",
+                location="adc",
+                hint=(
+                    "ADC 预分频只有一份（RCC_CFGR 的 ADCPRE 位，ADC1 与 ADC2 共用），"
+                    "后调用的 RCC_ADCCLKConfig 会覆盖先调用的。请把各实例的 "
+                    "prescaler 改成同一个值，或只在该实例上配置"
+                ),
+                subjects=tuple(item.instance.value for item in config.adc),
+            )
+        )
+
+    # 4) 双 ADC 模式的配对约束。
+    configured = {item.instance.value: item for item in config.adc}
+    for index, adc in enumerate(config.adc):
+        if not adc.mode.is_dual:
+            continue
+        missing = [
+            name for name in ("ADC1", "ADC2") if name not in configured
+        ]
+        if missing:
+            issues.append(
+                error(
+                    "adc.dual_mode_needs_pair",
+                    f"{adc.name} 选了双 ADC 模式 {adc.mode.name}，"
+                    f"但配置里没有 {'、'.join(missing)}",
+                    location=f"adc[{index}].mode",
+                    hint=(
+                        "双 ADC 模式要求 ADC1 与 ADC2 成对工作，两个实例都必须"
+                        "配置且 mode 写成同一个值。只想用单个 ADC 的话请把 mode "
+                        "改成 ADC_Mode_Independent"
+                    ),
+                    subjects=(adc.name, adc.mode.value),
+                )
+            )
+            continue
+
+        # 两个实例的 mode 必须一致，否则先初始化的那个决定 DUALMOD，
+        # 另一个的 mode 被静默忽略 —— 用户以为配上了。
+        peer = configured["ADC2" if adc.instance.value == "ADC1" else "ADC1"]
+        if peer.mode is not adc.mode:
+            issues.append(
+                error(
+                    "adc.dual_mode_mismatch",
+                    f"{adc.name} 的 mode 是 {adc.mode.value}，"
+                    f"而 {peer.name} 是 {peer.mode.value}",
+                    location=f"adc[{index}].mode",
+                    hint=(
+                        "双 ADC 模式下 DUALMOD 只有一份（在 ADC1 的 CR1 里），"
+                        "后写入的会覆盖先写入的，两个实例实际跑同一个模式。"
+                        "请把两者的 mode 改成一致"
+                    ),
+                    subjects=(adc.name, peer.name, adc.mode.value),
+                )
+            )
+
+    for index, adc in enumerate(config.adc):
+        location = f"adc[{index}]"
+
+        # 4) 多通道却没开扫描模式 —— 只有序列第一条会被转换
+        if len(adc.channels) > 1 and not adc.uses_scan_mode:
+            # 模型的 uses_scan_mode 已经把"多通道"算进去了，所以这里
+            # 只有显式 scan_mode=False 且多通道时才会成立（不会进）
+            issues.append(
+                warning(
+                    "adc.scan_mode_off",
+                    f"{adc.name} 配了 {len(adc.channels)} 条规则通道，"
+                    "但没有开启扫描模式",
+                    location=f"{location}.scan_mode",
+                    hint="多通道必须开 scan_mode，否则每轮只转换序列的第一条",
+                    subjects=(adc.name,),
+                )
+            )
+
+        # 5) 中断使能了却没配 NVIC 通道
+        if adc.needs_nvic:
+            channel = config.nvic.find_channel(adc.irqn)
+            if channel is None:
+                issues.append(
+                    error(
+                        "adc.irq_without_nvic",
+                        f"{adc.name} 使能了中断"
+                        f"（{'/'.join(i.name for i in adc.interrupts)}），"
+                        f"但 NVIC 里没有配 {adc.irqn} 通道",
+                        location=location,
+                        hint=(
+                            f"在 nvic.channels 里加一条 irq_channel: {adc.irqn}，"
+                            "否则中断触发了也没人响应。注意中容量没有 ADC1_IRQn，"
+                            "ADC1 与 ADC2 共用 ADC1_2_IRQn"
+                        ),
+                        subjects=(adc.name, adc.irqn),
+                    )
+                )
+            elif not channel.enabled:
+                issues.append(
+                    warning(
+                        "adc.irq_nvic_disabled",
+                        f"{adc.name} 使能了中断，但 NVIC 通道 {adc.irqn} 是禁用状态",
+                        location=location,
+                        hint="把该通道的 enabled 改成 true，或去掉 ADC 的中断配置",
+                        subjects=(adc.name, adc.irqn),
+                    )
+                )
+
+        # 6) 配了 NVIC 通道但没使能中断
+        channel = config.nvic.find_channel(adc.irqn)
+        if channel is not None and channel.enabled and not adc.needs_nvic:
+            issues.append(
+                warning(
+                    "adc.nvic_without_irq",
+                    f"NVIC 配了 {adc.irqn} 通道，但 {adc.name} 没有使能任何中断",
+                    location=location,
+                    hint=(
+                        "中断使能要两步：ADC_ITConfig 开外设中断、"
+                        "NVIC_Init 开中断通道。当前只做了后者，中断不会触发"
+                    ),
+                    subjects=(adc.name, adc.irqn),
+                )
+            )
+
+        # 7) ADC1 与 ADC2 共享中断通道 —— 只生成一个 ISR，需要提示
+        if adc.needs_nvic:
+            peers = [
+                other for other in config.adc
+                if other is not adc and other.irqn == adc.irqn and other.needs_nvic
+            ]
+            if peers:
+                names = "、".join(p.name for p in peers)
+                issues.append(
+                    info(
+                        "adc.shared_irq_channel",
+                        f"{adc.name} 与 {names} 共享中断通道 {adc.irqn}",
+                        location=location,
+                        hint=(
+                            "中容量的 ADC1 与 ADC2 共用一个向量（启动文件里是 "
+                            "ADC1_2_IRQHandler）。生成器把它们合并进一个 ISR，"
+                            "内部按实例与标志位分派"
+                        ),
+                        subjects=(adc.irqn,),
+                    )
+                )
+
+        # 8) 外部触发但对应的定时器没配
+        #
+        # 触发源里引用了 TIM1/TIM2/TIM3/TIM4，若那些定时器没在配置里，
+        # 转换永远不会被触发 —— 这是"配了没数据"的常见成因。
+        # 但**不能给 ERROR**：定时器可能由用户自己的代码初始化。
+        if not adc.trigger.is_software:
+            required = _adc_trigger_timer(adc.trigger)
+            if required and required not in {t.instance.value for t in config.tim}:
+                issues.append(
+                    warning(
+                        "adc.trigger_timer_missing",
+                        f"{adc.name} 用 {adc.trigger.label} 作为外部触发源，"
+                        f"但配置里没有 {required}",
+                        location=f"{location}.trigger",
+                        hint=(
+                            f"{adc.trigger.label} 的触发信号来自 {required}，"
+                            "它没被初始化就不会产生触发事件，ADC 永远不会开始转换。"
+                            f"在 TIM 页加一个 {required}，或把触发源改回软件触发"
+                        ),
+                        subjects=(adc.name, adc.trigger.value, required),
+                    )
+                )
+
+        # 9) 软件触发配了连续转换之外的情形需要显式启动 —— 只是提示
+        if adc.trigger.is_software and not adc.continuous:
+            issues.append(
+                info(
+                    "adc.software_trigger_note",
+                    f"{adc.name} 用软件触发且非连续转换，"
+                    "每轮采集都需要调用一次 ADC_SoftwareStartConvCmd",
+                    location=location,
+                    hint=(
+                        "生成的代码里已包含 ADC_SoftwareStartConvCmd(ADCx, ENABLE) "
+                        "作为首次启动；后续每轮采集要由业务代码自己再调一次"
+                    ),
+                    subjects=(adc.name,),
+                )
+            )
+
+        # 10) 引脚与手册默认值不一致 —— **只 WARN**（本工具没有数据手册）
+        for channel_config in adc.channels:
+            if not channel_config.needs_gpio:
+                continue
+            expected = channel_config.suggested_pin
+            if (
+                expected is not None
+                and (channel_config.port.letter, channel_config.pin) != expected
+            ):
+                issues.append(
+                    warning(
+                        "adc.pin_not_default",
+                        f"{adc.name} 的 {channel_config.channel.label} 用了 "
+                        f"{channel_config.pin_name}，而该通道**通常**是 "
+                        f"P{expected[0]}{expected[1]}",
+                        location=f"{location}.channels",
+                        hint=(
+                            "若你是有意接别的引脚，忽略此提示即可 —— "
+                            "本工具没有数据手册，这张通道/引脚表仅作参考，"
+                            "请以你手上那份 STM32F103 数据手册的「引脚定义」表为准"
+                        ),
+                        subjects=(channel_config.pin_name,),
+                    )
+                )
+
+        # 11) 配了外部通道但没给引脚 —— 不报错（引脚可能由用户别处配），提示一下
+        missing_pin = [
+            item for item in adc.external_channels if not item.needs_gpio
+        ]
+        if missing_pin and len(missing_pin) == len(adc.external_channels):
+            names = "、".join(item.channel.label for item in missing_pin)
+            issues.append(
+                info(
+                    "adc.pin_not_configured",
+                    f"{adc.name} 的外部通道（{names}）都没有指定引脚",
+                    location=f"{location}.channels",
+                    hint=(
+                        "本工具不会为它们生成 GPIO_Init。若引脚已在别处配好，"
+                        "忽略此提示；否则该引脚没被设成模拟输入（GPIO_Mode_AIN），"
+                        "读数会失真甚至恒为 0"
+                    ),
+                    subjects=(adc.name,),
+                )
+            )
+
+        # 12) 采样率与转换时间 —— 把算出来的值摆出来供核对
+        if adc.channels:
+            issues.append(
+                info(
+                    "adc.frequency_summary",
+                    f"{adc.name}: {adc.describe_clock(pclk2)}",
+                    location=location,
+                    hint=(
+                        "转换时间 = (采样周期 + 12.5) / ADCCLK，"
+                        "12.5 是 12 位逐次逼近的固定开销"
+                    ),
+                    subjects=(adc.name,),
+                )
+            )
+
+        # 13) 采样时间过短 + 未校准的精度提示（Info）
+        shortest = min(
+            (item.sample_time.cycles for item in adc.channels), default=0.0
+        )
+        if adc.channels and shortest <= 7.5:
+            issues.append(
+                info(
+                    "adc.short_sample_time",
+                    f"{adc.name} 的采样时间最短只有 {shortest:g} 周期",
+                    location=f"{location}.channels",
+                    hint=(
+                        "采样时间过短时，信号源内阻必须很低（通常要求 < 1kΩ），"
+                        "否则采样电容充不满、读数偏低。高阻抗信号源请用 55.5 或更长"
+                    ),
+                    subjects=(adc.name,),
+                )
+            )
+
+    return issues
+
+
+def _adc_trigger_timer(trigger: AdcTrigger) -> str:
+    """外部触发源依赖的定时器名；软件触发或不依赖定时器时返回空串。
+
+    ``ADC_ExternalTrigConv_Ext_IT11_TIM8_TRGO`` 依赖的是 EXTI11 或 TIM8，
+    两者在 C8T6 上都不可用（TIM8 是大容量才有），所以也不返回定时器名 ——
+    它由模型层的 ADC3 检查与这里的可用性判断各自处理。
+    """
+    return {
+        AdcTrigger.T1_CC1: "TIM1",
+        AdcTrigger.T1_CC2: "TIM1",
+        AdcTrigger.T1_CC3: "TIM1",
+        AdcTrigger.T2_CC2: "TIM2",
+        AdcTrigger.T3_TRGO: "TIM3",
+        AdcTrigger.T4_CC4: "TIM4",
+    }.get(trigger, "")
+
+
+# --------------------------------------------------------------------------
+# 规则编排
+# --------------------------------------------------------------------------
+
+
+# 全部规则，供 validate() 依次执行。
+#
+# 放在文件末尾而不是各组规则之间：Python 在**模块导入时**求值元组，
+# 规则函数必须已经绑定到模块命名空间，否则会 NameError。
 ALL_RULES = (
     check_chip,
     check_pins,
@@ -1330,6 +1736,7 @@ ALL_RULES = (
     check_afio,
     check_exti,
     check_tim,
+    check_adc,
 )
 
 

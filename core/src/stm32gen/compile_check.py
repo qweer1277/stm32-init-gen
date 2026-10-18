@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from stm32gen import DEFAULT_STDLIB_ROOT
+from stm32gen import DEFAULT_STDLIB_ROOT, STDLIB_ROOT_ENV
 from stm32gen.models import Stm32Config
 
 # Cortex-M3 的编译参数（按工具链区分，见 build_command）
@@ -456,12 +456,12 @@ def build_include_paths(stdlib_root: str | Path | None = None) -> list[str]:
     两者都没有时返回空列表 —— 调用方（编译验证）随后会因为找不到
     ``stm32f10x.h`` 而报错，那条错误里已经提示要设这个环境变量。
     """
-    configured = stdlib_root or os.environ.get(
-        "STM32_STDLIB_ROOT", DEFAULT_STDLIB_ROOT
-    )
+    configured = stdlib_root or os.environ.get(STDLIB_ROOT_ENV) or DEFAULT_STDLIB_ROOT
     if not configured:
         return []
     root = Path(configured)
+    if not root.is_dir():
+        return []
     paths: list[str] = []
     for sub in STDLIB_SUBDIRS:
         directory = root / sub

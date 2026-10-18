@@ -20,14 +20,13 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
 from stm32gen import (
-    DEFAULT_STDLIB_ROOT,
     OUTPUT_DIR_NAME,
     __version__,
+    configured_stdlib_root,
     default_out_dir,
 )
 from stm32gen.console import force_utf8_stdio
@@ -50,8 +49,8 @@ def stdlib_root() -> Path:
     stm32f10x.h」的形式冒出来 —— 那时已经很难联想到是环境变量没设。
     在这里直接失败，错误信息里带着该怎么修。
     """
-    configured = os.environ.get("STM32_STDLIB_ROOT", DEFAULT_STDLIB_ROOT)
-    if not configured:
+    root = configured_stdlib_root()
+    if root is None:
         raise RuntimeError(
             "未设置标准库代码根目录。请设置环境变量 STM32_STDLIB_ROOT 指向\n"
             "STM32F10x 标准外设库的根目录（其中应包含 Start/ 与 Library/ 两个\n"
@@ -62,7 +61,7 @@ def stdlib_root() -> Path:
             "\n"
             "该目录仅用于编译验证与符号表提取，生成代码本身不需要它。"
         )
-    return Path(configured)
+    return root
 
 
 # --------------------------------------------------------------------------
@@ -469,6 +468,25 @@ def _run_compile_check(
             "       可用模式：auto / keil / arm / armclang / armcc / gcc / host",
             file=sys.stderr,
         )
+        return EXIT_IO
+
+    # 真实目标编译必须先有标准库头文件。不提前拦下的话，编译器会为每个
+    # 头文件各报一条「'stm32f10x.h' file not found」，11 条错误把真正的
+    # 原因（环境变量没设）埋掉，用户会去查自己生成的代码。
+    # 宿主 gcc 降级不检查：它只做语法检查，本来就不需要标准库头文件。
+    #
+    # 提示全部走 stdout 并先于调用打印：混用 stderr 会让它和前面已缓冲的
+    # stdout 内容在终端里交错成乱序（实测提示会夹在「配置文件」与「输出目录」
+    # 之间），用户读起来像输出错乱。
+    if chosen.kind.is_native and configured_stdlib_root() is None:
+        print("[ -- ] 未设置标准库代码根目录，无法做真实目标编译")
+        print(
+            "       请设置环境变量 STM32_STDLIB_ROOT 指向 STM32F10x 标准外设库根目录"
+        )
+        print(
+            r"       例：$env:STM32_STDLIB_ROOT = 'D:\path\to\STM32F10x_StdPeriph_Lib'"
+        )
+        print("       该目录只用于编译验证，生成代码本身不需要它。")
         return EXIT_IO
 
     result = check_sources(config, output_dir, toolchain=chosen)

@@ -307,11 +307,12 @@ def test_command_source_dir_is_absolute() -> None:
 
 def test_build_include_paths() -> None:
     """包含路径要含 Start/Library/User 三层。"""
-    from stm32gen import DEFAULT_STDLIB_ROOT
+    from stm32gen import configured_stdlib_root
 
-    root = Path(DEFAULT_STDLIB_ROOT)
-    if not root.is_dir():
-        pytest.skip(f"标准库目录不可用：{root}")
+    # configured_stdlib_root() 而不是 Path(DEFAULT_STDLIB_ROOT)：后者未配置时
+    # 是 Path("")，即当前目录 "."，is_dir() 恒真，跳过逻辑会失效。
+    if configured_stdlib_root() is None:
+        pytest.skip("标准库目录未配置（设置 STM32_STDLIB_ROOT 后才跑这条）")
 
     paths = build_include_paths()
     assert len(paths) == len(STDLIB_SUBDIRS)

@@ -1030,7 +1030,7 @@ def run_probes(data: dict) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from stm32gen import DEFAULT_STDLIB_ROOT
+    from stm32gen import DEFAULT_STDLIB_ROOT, configured_stdlib_root
     from stm32gen.console import force_utf8_stdio
 
     force_utf8_stdio()
@@ -1061,7 +1061,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    stdlib_root = Path(args.stdlib_root)
+    # --stdlib-root 未传时回落到环境变量。不能直接 Path(args.stdlib_root)：
+    # 空字符串会解析成当前目录 "."，那个目录永远存在，于是「没配置」会被
+    # 误判成「配置好了」，然后拿当前目录当标准库根去扫。
+    stdlib_root: Path | None
+    if args.stdlib_root:
+        stdlib_root = Path(args.stdlib_root)
+    else:
+        stdlib_root = configured_stdlib_root()
+
+    if stdlib_root is None:
+        print(
+            "[FAIL] 未指定标准库目录。请传 --stdlib-root 或设置环境变量 STM32_STDLIB_ROOT",
+            file=sys.stderr,
+        )
+        return 1
+
     if not stdlib_root.is_dir():
         print(f"[FAIL] 找不到标准库目录：{stdlib_root}", file=sys.stderr)
         return 1

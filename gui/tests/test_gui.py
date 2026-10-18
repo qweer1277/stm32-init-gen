@@ -535,14 +535,15 @@ def window(qapp):
 
 
 def test_window_builds(window) -> None:
-    assert window.tabs.count() == 7
-    assert [window.tabs.tabText(i) for i in range(7)] == [
+    assert window.tabs.count() == 8
+    assert [window.tabs.tabText(i) for i in range(8)] == [
         "全局",
         "GPIO",
         "AFIO",
         "EXTI",
         "USART",
         "TIM",
+        "ADC",
         "NVIC",
     ]
 
@@ -562,6 +563,8 @@ ALL_GENERATED = [
     "bsp_usart.c",
     "bsp_tim.h",
     "bsp_tim.c",
+    "bsp_adc.h",
+    "bsp_adc.c",
     "bsp_nvic.h",
     "bsp_nvic.c",
     "bsp_it.h",
@@ -850,9 +853,12 @@ def test_window_irq_options_only_known(window) -> None:
     index = default_index()
     for value, _ in window._irq_options():
         assert index.has_enum(value)
-    # 本工具能配的中断只有 USART / EXTI / TIM 三类
+    # 本工具能配的中断只有 USART / EXTI / TIM / ADC 四类
     names = [value for value, _ in window._irq_options()]
-    assert all(name.startswith(("USART", "EXTI", "TIM")) for name in names)
+    assert all(name.startswith(("USART", "EXTI", "TIM", "ADC")) for name in names)
+    # ADC 必须在里面：ADC1/ADC2 共用的 ADC1_2_IRQn 若不在下拉里，
+    # 同步 NVIC 时 _combo 会停在首项，把中断号静默写成别的通道。
+    assert "ADC1_2_IRQn" in names
 
 
 def test_window_generate_updates_preview(window) -> None:
@@ -905,7 +911,7 @@ def test_window_export_writes_all_files_regardless_of_filter(
     window.on_export()
 
     written = sorted(path.name for path in tmp_path.iterdir())
-    assert len(written) == 19
+    assert len(written) == len(ALL_GENERATED)
     assert "bsp_gpio.c" in written  # 不在当前预览分组里，但必须导出
     assert "bsp_gpio.h" in written
     assert "main.c" in written
@@ -964,17 +970,58 @@ def test_window_compile_action(window) -> None:
     """「编译验证」要把结果写进问题面板，并在状态栏给结论。
 
     编译在**临时目录**里进行，不在用户目录留文件。
+
+    标准库没配时这条要跳过：那种情况下 on_compile() 会走「编译验证不可用」
+    分支提前返回（不弹 11 条找不到头文件的假错误），状态栏自然没有「通过」。
     """
+    from stm32gen import configured_stdlib_root
     from stm32gen.compile_check import find_toolchain
 
     if find_toolchain() is None:
         pytest.skip("本机没有可用编译器")
+    if configured_stdlib_root() is None:
+        pytest.skip("标准库目录未配置（设置 STM32_STDLIB_ROOT 后才跑这条）")
 
     window.on_compile()
     panel = window.issue_panel.toPlainText()
     assert "编译器" in panel
     assert "结论" in panel
     assert "通过" in window.status_label.text()
+
+
+def test_window_compile_refuses_without_stdlib(window, monkeypatch) -> None:
+    """标准库没配时必须说「不可用」，不能说「编译失败」。
+
+    这是防方向性错误：编译器缺头文件会报一串「标识符未定义」，如果照实显示
+    成「编译失败」，用户会去查自己的配置，而真正要改的是环境变量。
+    """
+    from stm32gen.compile_check import find_toolchain
+
+    toolchain = find_toolchain()
+    if toolchain is None or not toolchain.kind.is_native:
+        pytest.skip("本机没有 ARM 编译器")
+
+    monkeypatch.setattr(
+        "stm32gen_gui.main_window.configured_stdlib_root", lambda: None
+    )
+    shown: list[str] = []
+
+    def _fake_information(parent, title, text, *args, **kwargs):
+        shown.append(text)
+
+    def _fake_critical(parent, title, text, *args, **kwargs):
+        shown.append("CRITICAL:" + text)
+
+    from PySide6.QtWidgets import QMessageBox as _Box
+
+    monkeypatch.setattr(_Box, "information", _fake_information)
+    monkeypatch.setattr(_Box, "critical", _fake_critical)
+
+    window.on_compile()
+
+    assert shown, "应当弹出提示"
+    assert any("STM32_STDLIB_ROOT" in text for text in shown), shown
+    assert not any(text.startswith("CRITICAL:") for text in shown), shown
 
 
 def test_window_compile_warns_on_host_fallback(window, monkeypatch) -> None:
@@ -1013,11 +1060,14 @@ def test_window_compile_warns_on_host_fallback(window, monkeypatch) -> None:
 
 def test_window_compile_reports_keil(window) -> None:
     """有 Keil 时 GUI 的编译验证要用它，且标注为真实目标编译。"""
+    from stm32gen import configured_stdlib_root
     from stm32gen.compile_check import find_toolchain
 
     found = find_toolchain()
     if found is None or not found.kind.is_keil:
         pytest.skip("本机没有 Keil 编译器")
+    if configured_stdlib_root() is None:
+        pytest.skip("标准库目录未配置（设置 STM32_STDLIB_ROOT 后才跑这条）")
 
     window.on_compile()
     panel = window.issue_panel.toPlainText()
@@ -1043,6 +1093,13 @@ def test_window_compile_detects_broken_code(window, monkeypatch) -> None:
 
     if find_toolchain() is None:
         pytest.skip("本机没有可用编译器")
+
+    # check_sources 被整个替身掉，标准库根本不会被读；但 on_compile() 在调用
+    # 它之前会先检查标准库是否配置，不配就直接弹「不可用」返回。这里给个假
+    # 路径让流程走到替身，测试意图（注入编译错误）与标准库无关。
+    monkeypatch.setattr(
+        "stm32gen_gui.main_window.configured_stdlib_root", lambda: Path("/fake")
+    )
 
     # 直接替身掉 check_sources，模拟编译失败
     def fake_check(config, directory, **kwargs):
@@ -1292,7 +1349,8 @@ def _current_preview(window) -> str:
         (3, "bsp_exti.c"),
         (4, "bsp_usart.c"),
         (5, "bsp_tim.c"),
-        (6, "bsp_nvic.c"),
+        (6, "bsp_adc.c"),
+        (7, "bsp_nvic.c"),
     ],
 )
 def test_config_tab_switch_focuses_matching_source(window, tab_index, expected) -> None:
@@ -1898,6 +1956,272 @@ def test_tim_list_shows_external_clock_marker(window) -> None:
     window._on_tim_edited()
     text = window.tim_list.item(0).text()
     assert "外部时钟" in text
+
+# --------------------------------------------------------------------------
+# ADC 页
+# --------------------------------------------------------------------------
+
+
+def test_adc_form_roundtrips_all_fields() -> None:
+    """bridge 层的表单往返：填表 → 模型 → 再读回，一个字都不能丢。
+
+    这是 bridge 保持**不依赖 Qt** 的价值所在：这段逻辑可以无头单测，
+    而界面上最容易出错的正是这层双向转换。
+    """
+    form = bridge.AdcForm(
+        instance="ADC1",
+        mode="ADC_Mode_Independent",
+        prescaler="RCC_PCLK2_Div6",
+        scan_mode=True,
+        continuous=True,
+        trigger="ADC_ExternalTrigConv_None",
+        data_align="ADC_DataAlign_Right",
+        interrupts=["ADC_IT_EOC"],
+        watchdog=True,
+        watchdog_channel="ADC_Channel_9",
+        watchdog_high="3000",
+        watchdog_low="100",
+        calibration=True,
+        label="主采样",
+        channels=[
+            bridge.AdcChannelRow(
+                channel="ADC_Channel_3",
+                sample_time="ADC_SampleTime_28Cycles5",
+                port="GPIOA",
+                pin="3",
+                label="电位器",
+            )
+        ],
+    )
+    config = form.to_config()
+    assert config.instance.value == "ADC1"
+    assert config.sequence_length == 1
+    assert config.watchdog_high == 3000
+    assert config.watchdog_low == 100
+
+    back = bridge.AdcForm.from_config(config)
+    assert back.instance == form.instance
+    assert back.prescaler == form.prescaler
+    assert back.continuous is True
+    assert back.watchdog is True
+    assert back.watchdog_channel == "ADC_Channel_9"
+    assert back.channels[0].port == "GPIOA"
+    assert back.channels[0].pin == "3"
+    assert back.channels[0].label == "电位器"
+
+
+def test_adc_internal_channel_drops_pin_text() -> None:
+    """内部通道（16/17）不接引脚，表格里残留的端口/引脚文本不能带进模型。
+
+    否则模型层会报「内部通道不接任何引脚」，而用户根本没填过 ——
+    那是切换通道时留下的脏数据。
+    """
+    row = bridge.AdcChannelRow(
+        channel="ADC_Channel_16", port="GPIOA", pin="1", label="温度"
+    )
+    config = row.to_config()
+    assert config.port is None
+    assert config.pin is None
+    assert config.is_internal
+
+
+def test_adc_watchdog_off_clears_stale_thresholds() -> None:
+    """没开看门狗时，残留的阈值不能进模型。
+
+    GUI 里用户很可能先填了阈值再取消勾选；若原样传给模型，
+    会被「没开看门狗却填了阈值」的规则拦下 —— 那是噪音，不是真错误。
+    """
+    form = bridge.AdcForm(
+        watchdog=False,
+        watchdog_high="2000",
+        watchdog_low="50",
+        watchdog_channel="ADC_Channel_3",
+        channels=[bridge.AdcChannelRow(channel="ADC_Channel_0")],
+    )
+    config = form.to_config()
+    assert config.watchdog is False
+    assert config.watchdog_high == 4095
+    assert config.watchdog_low == 0
+    assert config.watchdog_channel is None
+
+
+def test_adc_trigger_options_exclude_adc3_only() -> None:
+    """C8T6 上没有 ADC3，6 个 ADC3 专属触发源不该出现在下拉里。"""
+    options = bridge.adc_trigger_options(has_adc3=False)
+    values = {value for value, _ in options}
+    assert "ADC_ExternalTrigConv_T5_CC1" not in values
+    assert "ADC_ExternalTrigConv_T1_CC1" in values
+    assert len(options) == 8
+    # 大容量芯片上全部 14 个都可用
+    assert len(bridge.adc_trigger_options(has_adc3=True)) == 14
+
+
+def test_adc_prescaler_options_warn_on_overclock() -> None:
+    """下拉标签要标出超 14MHz 的选项 —— 库的断言不查频率，只能在这里提醒。"""
+    options = dict(bridge.adc_prescaler_options(72_000_000))
+    assert "超 14MHz" in options["RCC_PCLK2_Div2"]
+    assert "超 14MHz" in options["RCC_PCLK2_Div4"]
+    assert "超 14MHz" not in options["RCC_PCLK2_Div6"]
+
+
+def test_adc_channel_options_mark_internal_channels() -> None:
+    """通道 16/17 的标签要说清是内部通道 —— 它们不占引脚。"""
+    options = dict(bridge.adc_channel_options())
+    assert "内部温度传感器" in options["ADC_Channel_16"]
+    assert "Vrefint" in options["ADC_Channel_17"]
+    assert "内部" not in options["ADC_Channel_3"]
+
+
+def test_adc_tab_can_be_built(window) -> None:
+    """ADC 页签能建出来，且配套控件齐全。"""
+    assert window.adc_list is not None
+    assert window.adc_channel_table is not None
+    assert window.adc_instance_combo is not None
+    assert len(window.adc_interrupt_boxes) == 3
+
+
+def test_adc_add_creates_one_channel_by_default(window) -> None:
+    """新增实例时默认带一条通道。
+
+    空序列在模型层会被拒绝，GUI 不该造出一个必然报错的初始状态 ——
+    用户点「添加」就应该看到一个能立刻生成的配置。
+    """
+    window.on_add_adc()
+    assert window.adc_list.count() == 1
+    assert window.adc_channel_table.rowCount() == 1
+
+
+def test_adc_add_picks_unused_instance(window) -> None:
+    """第二次添加应选还没用过的 ADC2。"""
+    window.on_add_adc()
+    window.on_add_adc()
+    from PySide6.QtCore import Qt
+
+    instances = [
+        window.adc_list.item(row).data(Qt.ItemDataRole.UserRole).instance
+        for row in range(window.adc_list.count())
+    ]
+    assert instances == ["ADC1", "ADC2"]
+
+
+def test_adc_channel_dropdown_disables_pin_for_internal(window) -> None:
+    """选内部通道时端口/引脚两格要禁用，避免用户白填。"""
+    window.on_add_adc()
+    window.adc_channel_table.cellWidget(0, 0).setCurrentIndex(
+        window.adc_channel_table.cellWidget(0, 0).findData("ADC_Channel_16")
+    )
+    port_combo = window.adc_channel_table.cellWidget(0, 2)
+    assert not port_combo.isEnabled()
+
+
+def test_adc_channel_pin_enabled_for_external(window) -> None:
+    window.on_add_adc()
+    combo = window.adc_channel_table.cellWidget(0, 0)
+    combo.setCurrentIndex(combo.findData("ADC_Channel_3"))
+    assert window.adc_channel_table.cellWidget(0, 2).isEnabled()
+
+
+def test_adc_watchdog_widgets_hide_with_label(window) -> None:
+    """看门狗的字段隐藏时**必须连 QFormLayout 的标签一起隐藏**。
+
+    窗口没 show 时 ``isVisible()`` 恒为 False，所以测隐藏要用 ``isHidden()``
+    —— 否则这条测试永远通过，等于没写。
+    """
+    window.on_add_adc()
+    label = window.adc_watchdog_form.labelForField(window.adc_watchdog_high_edit)
+    assert label is not None
+
+    assert window.adc_watchdog_high_edit.isHidden()
+    assert label.isHidden()
+
+    window.adc_watchdog_box.setChecked(True)
+    assert not window.adc_watchdog_high_edit.isHidden()
+    assert not label.isHidden()
+
+    window.adc_watchdog_box.setChecked(False)
+    assert window.adc_watchdog_high_edit.isHidden()
+    assert label.isHidden()
+
+
+def test_adc_list_shows_watchdog_marker(window) -> None:
+    """列表行要标出看门狗窗口，否则要看详情才知道是否启用。"""
+    window.on_add_adc()
+    window.adc_watchdog_box.setChecked(True)
+    window.adc_watchdog_high_edit.setText("3000")
+    window.adc_watchdog_low_edit.setText("100")
+    window._on_adc_edited()
+    text = window.adc_list.item(0).text()
+    assert "看门狗" in text
+
+
+def test_adc_list_shows_dual_mode_marker(window) -> None:
+    """双 ADC 模式要在列表里可见 —— 它要求 ADC2 也配置。"""
+    window.on_add_adc()
+    window.adc_mode_combo.setCurrentIndex(
+        window.adc_mode_combo.findData("ADC_Mode_RegSimult")
+    )
+    window._on_adc_edited()
+    assert "双 ADC 模式" in window.adc_list.item(0).text()
+
+
+def test_adc_sync_nvic_adds_one_shared_channel(window) -> None:
+    """ADC1 与 ADC2 共用 ADC1_2_IRQn，同步时只能补一条通道。
+
+    补两条会撞上 ``nvic.duplicate_channel`` —— 那是硬件的样子，不该造重复。
+    """
+    window.on_add_adc()
+    window.adc_interrupt_boxes["ADC_IT_EOC"].setChecked(True)
+    window._on_adc_edited()
+
+    window.on_add_adc()
+    window.adc_interrupt_boxes["ADC_IT_EOC"].setChecked(True)
+    window._on_adc_edited()
+
+    window.on_sync_adc_nvic()
+    channels = [
+        window.nvic_table.cellWidget(row, 0).currentData()
+        for row in range(window.nvic_table.rowCount())
+    ]
+    assert channels.count("ADC1_2_IRQn") == 1
+
+
+def test_adc_load_config_fills_form(window) -> None:
+    """打开配置时 ADC 页要能完整回填。"""
+    from stm32gen.models import (
+        AdcChannelConfig,
+        AdcConfig,
+        Stm32Config,
+    )
+
+    config = Stm32Config(
+        project_name="adc_ui",
+        adc=[
+            AdcConfig(
+                instance="ADC1",
+                continuous=True,
+                channels=[
+                    AdcChannelConfig(
+                        channel="ADC_Channel_3", port="GPIOA", pin=3, label="电位器"
+                    )
+                ],
+                label="主采样",
+            )
+        ],
+    )
+    window.load_config(config)
+    assert window.adc_list.count() == 1
+    assert window.adc_channel_table.rowCount() == 1
+    assert window.adc_continuous_box.isChecked()
+    assert window.adc_channel_table.item(0, 4).text() == "电位器"
+
+
+def test_adc_tab_maps_to_adc_source(window) -> None:
+    """ADC 配置页对应的预览文件必须是 bsp_adc.c。"""
+    from stm32gen_gui.main_window import CONFIG_TAB_SOURCES
+
+    index = [i for i in range(window.tabs.count()) if window.tabs.tabText(i) == "ADC"][0]
+    assert CONFIG_TAB_SOURCES[index] == "bsp_adc.c"
+
 
 def test_shortcut_script_is_utf8_with_bom() -> None:
     """create-shortcut.ps1 必须存为**带 BOM** 的 UTF-8。

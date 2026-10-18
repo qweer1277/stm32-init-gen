@@ -1,4 +1,4 @@
-# stm32-init-gen-gui
+# stm32-init-gen · 桌面界面（gui/）
 
 STM32 标准外设库初始化代码生成器的**桌面界面**（PySide6）。
 
@@ -90,10 +90,10 @@ gui\
 │  │  └─ stm32-init-gen.ico  窗口与快捷方式图标（16~256 共 7 个尺寸）
 │  ├─ bridge.py        表单数据 -> 配置模型（**不依赖 Qt**，可完整单测）
 │  ├─ highlighter.py   C 代码语法高亮
-│  ├─ main_window.py   主窗口：菜单、工具栏、七个配置页、预览、校验面板
+│  ├─ main_window.py   主窗口：菜单、工具栏、八个配置页、预览、校验面板
 │  ├─ app.py           入口（含 --selfcheck）
 │  └─ __main__.py      允许 python -m stm32gen_gui
-├─ tests\test_gui.py   160 项测试
+├─ tests\test_gui.py   179 项测试
 ├─ tests\conftest.py   Qt 平台与字体环境（必须在任何 PySide6 导入之前）
 └─ docs\GUI-使用说明.md 完整使用说明与各页签截图
 ```
@@ -132,7 +132,7 @@ python -m PyInstaller --noconfirm --clean --distpath dist --workpath build packa
 
 **打包后什么能用、什么不能用**：
 
-- 生成 C 代码 —— 能用。19 个 `.j2` 模板与 `symbols.json` 已作为 data 打进包，
+- 生成 C 代码 —— 能用。21 个 `.j2` 模板与 `symbols.json` 已作为 data 打进包，
   `--selfcheck` 的「核心资源」一步专门验证这件事
 - **编译验证 —— 不能用**。它调外部的 `armclang.exe` / `armcc.exe`，
   还要 ``$env:STM32_STDLIB_ROOT\{Start,Library,User}`` 三层头文件路径，

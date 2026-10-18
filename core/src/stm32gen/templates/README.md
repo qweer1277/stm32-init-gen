@@ -1,8 +1,8 @@
 # Jinja2 模板
 
-**按外设分文件**：每个外设一个 `.h`/`.c` 对，加上聚合入口与中断骨架，共 **19 个产物**。
+**按外设分文件**：每个外设一个 `.h`/`.c` 对，加上聚合入口与中断骨架，共 **21 个产物**。
 
-另有 `--layout merged` 把 19 个产物合并成 `bsp.h` / `bsp.c` / `main.c`。合并
+另有 `--layout merged` 把 21 个产物合并成 `bsp.h` / `bsp.c` / `main.c`。合并
 **不在这里做**，模板只有下面这一套：`generator/merge.py` 在渲染后剥掉文件级
 脚手架再拼接。所以加外设只需加一对模板，两种布局自动同时受益。
 
@@ -15,17 +15,19 @@
 | `bsp_afio.h.j2` | `bsp_afio.h` | AFIO 接口（重映射 + SWJ 释放） |
 | `bsp_afio.c.j2` | `bsp_afio.c` | AFIO 时钟、**全部引脚重映射**（USART + TIM）、SWJ 释放 |
 | `bsp_gpio.h.j2` | `bsp_gpio.h` | GPIO 接口 + 带标签引脚的 `BSP_xxx_PORT`/`BSP_xxx_PIN` 宏 |
-| `bsp_gpio.c.j2` | `bsp_gpio.c` | 端口时钟与全部 `GPIO_Init`（含 USART/EXTI/TIM 的引脚） |
+| `bsp_gpio.c.j2` | `bsp_gpio.c` | 端口时钟与全部 `GPIO_Init`（含 USART/EXTI/TIM/ADC 的引脚） |
 | `bsp_exti.h.j2` | `bsp_exti.h` | EXTI 接口 |
 | `bsp_exti.c.j2` | `bsp_exti.c` | 外部中断线选择（`GPIO_EXTILineConfig`）与边沿配置 |
 | `bsp_usart.h.j2` | `bsp_usart.h` | USART 接口 |
 | `bsp_usart.c.j2` | `bsp_usart.c` | 实例时钟、`USART_Init`、中断使能、`USART_Cmd` |
 | `bsp_tim.h.j2` | `bsp_tim.h` | TIM 接口 |
 | `bsp_tim.c.j2` | `bsp_tim.c` | 时基、输出比较（每通道 `TIM_OCxInit`）、预装载、高级定时器主输出 |
+| `bsp_adc.h.j2` | `bsp_adc.h` | ADC 接口 |
+| `bsp_adc.c.j2` | `bsp_adc.c` | ADCCLK 分频、`ADC_Init`、通道序列、看门狗、校准、中断使能 |
 | `bsp_nvic.h.j2` | `bsp_nvic.h` | NVIC 接口 |
 | `bsp_nvic.c.j2` | `bsp_nvic.c` | 优先级分组与各通道 `NVIC_Init` |
 | `bsp_it.h.j2` | `bsp_it.h` | 中断服务函数声明 |
-| `bsp_it.c.j2` | `bsp_it.c` | USART / EXTI / TIM 中断服务函数骨架 |
+| `bsp_it.c.j2` | `bsp_it.c` | USART / EXTI / TIM / ADC 中断服务函数骨架 |
 | `main.c.j2` | `main.c` | 最小可编译的 main，调用 `bsp_init()` |
 
 > **重映射为什么在 `bsp_afio.c` 而不是各外设文件里**：
@@ -84,7 +86,7 @@ Environment(
 
 模板不只是拼字符串，几处关键顺序与写法都有理由，注释里写明了：
 
-**1. `bsp_init()` 的调用顺序：时钟 → GPIO → USART → NVIC**
+**1. `bsp_init()` 的调用顺序：时钟 → 重映射 → GPIO → EXTI → USART → TIM → ADC → NVIC**
 
 时钟必须最先：外设寄存器写操作依赖总线时钟，没配好时后续配置全部白写
 ——这是最常见的「配了没用」原因。NVIC 放最后：通道一开中断立刻可以进，

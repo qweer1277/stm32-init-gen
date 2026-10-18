@@ -1,0 +1,159 @@
+/**
+  ******************************************************************************
+  * @file    bsp_adc.c
+  * @brief   {{ ctx.chip }} 模数转换（ADC）配置。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * 模拟输入引脚的 GPIO_Init 在 bsp_gpio.c 里 —— 引脚模式是 GPIO 的职责，
+  * 同一引脚只在一处配置。
+  ******************************************************************************
+  */
+
+#include "bsp_adc.h"
+
+/**
+  * @brief  初始化全部已配置的 ADC 实例。
+  * @note   几处与其它外设不同的地方，都在这里处理了：
+  *
+  *         (1) **ADCCLK 分频是全局一份**（RCC_CFGR 的 ADCPRE 位，ADC1 与
+  *             ADC2 共用），所以 RCC_ADCCLKConfig 只在开头调一次，
+  *             不放进每个实例的循环里 —— 放进去的话后一个实例会覆盖前一个。
+  *
+  *         (2) **校准必须在 ADC_Cmd 之前做**。校准写的是 CR2 的 RSTCAL/CAL
+  *             位；先开 ADON 再校准同样能跑，但第一次转换的结果不可信。
+  *
+  *         (3) **校准的状态函数返回值语义反直觉**：ADC_GetResetCalibrationStatus
+  *             返回 SET 表示"该位仍置位"（校准还在进行），返回 RESET 才是
+  *             完成。下面的等待循环因此判的是 != SET。
+  *
+  *         (4) **所有等待循环都带上限**（code-standards R4.3）。校准卡住时
+  *             放弃校准并继续，而不是卡死在启动阶段 —— 现场表现是
+  *             "上电没反应"，比"精度差一点"难查得多。
+  *
+  *         (5) **ADC_ExternalTrigConv_None 不是"没有触发"**，它的实际含义是
+  *             软件触发（SWSTART）。选了它之后仍要调
+  *             ADC_SoftwareStartConvCmd，否则一次转换都不会开始。
+  * @param  None
+  * @retval None
+  */
+void bsp_adc_init(void)
+{
+{% if ctx.adc_clock %}
+    /* {{ ctx.adc_clock.comment }} */
+    {{ ctx.adc_clock.c_line }}
+{% endif %}
+{% if ctx.adc_prescaler and ctx.adc_configs %}
+
+    /* ADCCLK 分频：**全局一份**（RCC_CFGR 的 ADCPRE 位）。
+       ADC1 与 ADC2 共用这一个分频，所以只在这里设一次。
+       {{ ctx.adc_prescaler_label }}；库的 IS_RCC_ADCCLK 只检查取值是不是
+       四个分频宏之一，**不检查频率**，超频时它不报错。 */
+    RCC_ADCCLKConfig({{ ctx.adc_prescaler }});
+{% endif %}
+{% for adc in ctx.adc_configs %}
+
+    /* ── {{ adc.instance }}{% if adc.label %} — {{ adc.label }}{% endif %} ─────────────────────────────────────
+       {{ adc.clock_note }} */
+    {
+        /* 变量名用 ST 例程的惯例名（ADC_InitStructure），便于与官方例程对照。 */
+        ADC_InitTypeDef ADC_InitStructure;
+
+        /* ADC_Init 的 6 个字段。序列长度由下面配的通道数决定，这里必须
+           与之一致 —— 写成更大的值会让序列里多出未配置的通道。 */
+        ADC_InitStructure.ADC_Mode               = {{ adc.mode }};
+        ADC_InitStructure.ADC_ScanConvMode       = {{ "ENABLE" if adc.scan_mode else "DISABLE" }};
+        ADC_InitStructure.ADC_ContinuousConvMode = {{ "ENABLE" if adc.continuous else "DISABLE" }};
+        ADC_InitStructure.ADC_ExternalTrigConv   = {{ adc.external_trigger }};
+        ADC_InitStructure.ADC_DataAlign          = {{ adc.data_align }};
+        ADC_InitStructure.ADC_NbrOfChannel       = {{ adc.sequence_length }};
+        ADC_Init({{ adc.instance }}, &ADC_InitStructure);
+
+{% if adc.channels %}
+        /* 规则组序列。Rank 从 1 开始，顺序即出结果的顺序。 */
+{% for channel in adc.channels %}
+        /* rank {{ channel.rank }}：{{ channel.channel_label }}，采样 {{ channel.sample_cycles }} 周期{% if channel.pin_name %} ← {{ channel.pin_name }}{% elif channel.is_internal %}（内部通道，不占引脚）{% endif %}{% if channel.label %}（{{ channel.label }}）{% endif %} */
+        ADC_RegularChannelConfig({{ adc.instance }}, {{ channel.channel }}, {{ channel.rank }}, {{ channel.sample_time }});
+{% endfor %}
+{% endif %}
+{% if adc.watchdog %}
+        /* 模拟看门狗：转换结果落在 [低, 高] 之外时置 AWD 标志/触发 AWD 中断。
+           阈值是 12 位的 0~4095，且参数顺序是 **(高, 低)** —— 与直觉相反。
+           监控通道必须先指定：只调 ADC_AnalogWatchdogCmd 而不调
+           ADC_AnalogWatchdogSingleChannelConfig 的话，库里按通道 0 处理，
+           盯的是错的通道。 */
+        ADC_AnalogWatchdogThresholdsConfig({{ adc.instance }}, {{ adc.watchdog_high }}, {{ adc.watchdog_low }});
+        ADC_AnalogWatchdogSingleChannelConfig({{ adc.instance }}, {{ adc.watchdog_channel }});
+        ADC_AnalogWatchdogCmd({{ adc.instance }}, ADC_AnalogWatchdog_SingleRegEnable);
+
+{% endif %}
+{% if adc.has_interrupts %}
+        /* 使能中断。要生效需要两步：
+           (1) 这里用 ADC_ITConfig 开外设侧的中断
+           (2) bsp_nvic_init() 里用 NVIC_Init 开 ADC1_2_IRQn 通道
+           只做其中一步，中断不会触发。 */
+{% for it in adc.interrupts %}
+        ADC_ITConfig({{ adc.instance }}, {{ it }}, ENABLE);
+{% endfor %}
+
+{% endif %}
+{% if adc.needs_calibration %}
+        /* 校准：复位校准寄存器 → 等它清 → 启动校准 → 等它清。
+           **状态函数返回 SET 表示"该位还在"，不是"完成"** —— 所以下面
+           判的是 != SET，与函数名字面的直觉相反。
+           两段等待各用一个独立的状态变量：复用一个的话，第一段成功留下
+           的 SET 会让第二段的超时分支永远进不去。 */
+        {
+            uint32_t adc_wait_loops;
+            uint8_t adc_reset_done = 0u;
+            uint8_t adc_cal_done = 0u;
+
+            ADC_ResetCalibration({{ adc.instance }});
+            for (adc_wait_loops = 0u;
+                 adc_wait_loops < {{ adc.calibration_timeout_loops }}u;
+                 adc_wait_loops++)
+            {
+                if (ADC_GetResetCalibrationStatus({{ adc.instance }}) == RESET)
+                {
+                    adc_reset_done = 1u;
+                    break;
+                }
+            }
+
+            ADC_StartCalibration({{ adc.instance }});
+            for (adc_wait_loops = 0u;
+                 adc_wait_loops < {{ adc.calibration_timeout_loops }}u;
+                 adc_wait_loops++)
+            {
+                if (ADC_GetCalibrationStatus({{ adc.instance }}) == RESET)
+                {
+                    adc_cal_done = 1u;
+                    break;
+                }
+            }
+
+            /* 超时也继续往下走，不卡死在启动阶段。
+               现象是精度下降，而不是"上电没反应"——后者难查得多。
+               用调试器看 CR2 的 RSTCAL/CAL 位可以确认是否真的校准过。 */
+            (void)adc_reset_done;
+            (void)adc_cal_done;
+        }
+
+{% endif %}
+        /* 使能 ADC 本体。之前的一切配置在 ADON=0 时不生效。 */
+        ADC_Cmd({{ adc.instance }}, ENABLE);
+{% if adc.software_trigger %}
+
+        /* 软件触发：ADC_ExternalTrigConv_None 的名字有误导性 ——
+           它表示"由 SWSTART 启动"，不是"不需要触发"。这里给一次启动，
+           之后的每轮采集要由业务代码自己再调一次
+           ADC_SoftwareStartConvCmd({{ adc.instance }}, ENABLE);
+           （连续转换模式下这一句之后会自动反复转换） */
+        ADC_SoftwareStartConvCmd({{ adc.instance }}, ENABLE);
+{% endif %}
+    }
+{% endfor %}
+{% if not ctx.adc_configs %}
+    /* 本次没有配置任何 ADC。
+       函数保留为空实现，使 bsp_init() 的调用序列在所有配置下都一致。 */
+{% endif %}
+}

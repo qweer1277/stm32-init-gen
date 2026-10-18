@@ -8,7 +8,7 @@
   *
   * 本文件只做**顺序编排**，不含任何外设配置细节 ——
   * 各外设的实现分别在 bsp_rcc.c / bsp_afio.c / bsp_gpio.c / bsp_exti.c /
-  * bsp_usart.c / bsp_tim.c / bsp_nvic.c。
+  * bsp_usart.c / bsp_tim.c / bsp_adc.c / bsp_nvic.c。
   ******************************************************************************
   */
 
@@ -34,7 +34,10 @@
   *         5. ``bsp_usart_init()`` —— 此时 TX/RX 引脚已经是复用模式。
   *         6. ``bsp_tim_init()`` —— 时基、输出比较、中断使能。
   *            PWM 输出引脚已在第 3 步配好。
-  *         7. ``bsp_nvic_init()`` —— **放最后**。NVIC 通道一开，
+  *         7. ``bsp_adc_init()`` —— ADCCLK 分频、ADC_Init、通道序列、校准。
+  *            模拟输入引脚已在第 3 步配成 GPIO_Mode_AIN；ADC 由时钟树
+  *            之外的 ADCCLK 驱动，与 TIM 无关，所以排在 TIM 之后即可。
+  *         8. ``bsp_nvic_init()`` —— **放最后**。NVIC 通道一开，
   *            中断立刻可以进；此时外设与引脚都已配置完毕，
   *            不会出现"中断进了但外设还没配好"的窗口。
   * @param  None
@@ -48,7 +51,7 @@ void bsp_init(void)
     /* (2) AFIO：引脚重映射与 SWJ 释放（必须早于 GPIO_Init） */
     bsp_afio_init();
 
-    /* (3) GPIO 引脚（含 USART / EXTI / TIM 的引脚） */
+    /* (3) GPIO 引脚（含 USART / EXTI / TIM / ADC 的引脚） */
     bsp_gpio_init();
 
     /* (4) EXTI 外部中断线 */
@@ -60,6 +63,9 @@ void bsp_init(void)
     /* (6) TIM 定时器（时基、输出比较、中断使能） */
     bsp_tim_init();
 
-    /* (7) NVIC 优先级分组与中断通道 */
+    /* (7) ADC 模数转换（分频、通道序列、看门狗、校准） */
+    bsp_adc_init();
+
+    /* (8) NVIC 优先级分组与中断通道 */
     bsp_nvic_init();
 }

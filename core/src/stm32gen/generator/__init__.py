@@ -7,7 +7,7 @@
 context.py  把配置模型转换成模板上下文（所有条件与预计算都在这里）
 render.py   加载模板并渲染，返回 GeneratedFile 列表
 layout.py   产物形态（分文件 / 合并）
-merge.py    渲染后把 19 个文件合成 bsp.h / bsp.c / main.c
+merge.py    渲染后把 21 个文件合成 bsp.h / bsp.c / main.c
 types.py    GeneratedFile / GenerateResult 数据结构
 ```
 

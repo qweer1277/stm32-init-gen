@@ -23,6 +23,16 @@ from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 from stm32gen.models import (
+    AdcChannel,
+    AdcChannelConfig,
+    AdcConfig,
+    AdcDataAlign,
+    AdcInstance,
+    AdcInterrupt,
+    AdcMode,
+    AdcPrescaler,
+    AdcSampleTime,
+    AdcTrigger,
     AfioConfig,
     ChipId,
     ExtiLineConfig,
@@ -373,6 +383,86 @@ def tim_etr_prescaler_options() -> list[tuple[str, str]]:
 def tim_etr_polarity_options() -> list[tuple[str, str]]:
     """ETR 外部触发极性选项。"""
     return [(item.value, item.label) for item in TimExtTriggerPolarity]
+
+
+# --------------------------------------------------------------------------
+# ADC 选项
+# --------------------------------------------------------------------------
+
+
+def adc_instance_options() -> list[tuple[str, str]]:
+    """ADC 实例下拉选项。
+
+    显示名带上「共用 ADC1_2_IRQn」的提示：中容量只有 ADC1/ADC2，两者
+    共用一个中断向量，这一点在选实例时就该看到。
+    """
+    return [
+        (item.value, f"{item.value}（与另一实例共用 {item.irqn}）")
+        for item in AdcInstance
+    ]
+
+
+def adc_mode_options() -> list[tuple[str, str]]:
+    """ADC 工作模式下拉选项。
+
+    双模式（非 Independent）标注「需 ADC1+ADC2 成对」：只配一个实例时
+    校验层会报 ERROR，提前在标签里说清楚比让用户配完再看到错误好。
+    """
+    result: list[tuple[str, str]] = []
+    for item in AdcMode:
+        suffix = "（单 ADC 可用）" if item.is_independent else "（需 ADC1+ADC2 成对）"
+        result.append((item.value, f"{item.name}{suffix}"))
+    return result
+
+
+def adc_trigger_options(has_adc3: bool = False) -> list[tuple[str, str]]:
+    """规则组触发源下拉选项。
+
+    ``has_adc3=False``（C8T6/C6T6 的情形）时剔除 6 个 ADC3 专属选项 ——
+    选了它们等于不触发，模型层也会拒绝。这里直接不给选项，
+    比给了再报错友好。
+    """
+    return [
+        (item.value, item.label)
+        for item in AdcTrigger.options_for_chip(has_adc3=has_adc3)
+    ]
+
+
+def adc_sample_time_options() -> list[tuple[str, str]]:
+    """采样时间下拉选项（中文标签带周期数）。"""
+    return [(item.value, item.label) for item in AdcSampleTime]
+
+
+def adc_data_align_options() -> list[tuple[str, str]]:
+    """数据对齐下拉选项。"""
+    return [
+        (AdcDataAlign.RIGHT.value, "右对齐（0~4095）"),
+        (AdcDataAlign.LEFT.value, "左对齐（0~65520）"),
+    ]
+
+
+def adc_prescaler_options(pclk2_hz: int = 72_000_000) -> list[tuple[str, str]]:
+    """ADCCLK 分频下拉选项，标签里带上算出来的频率便于判断是否超频。
+
+    ADCCLK 上限 14MHz 不在库的断言里（``IS_RCC_ADCCLK`` 只查取值合法），
+    所以这里把它做成可见的提示。
+    """
+    result: list[tuple[str, str]] = []
+    for item in AdcPrescaler:
+        adcclk = pclk2_hz / item.divider
+        warn = "（超 14MHz 上限）" if adcclk > 14_000_000 else ""
+        result.append((item.value, f"{item.label} → ADCCLK {adcclk / 1e6:g}MHz{warn}"))
+    return result
+
+
+def adc_interrupt_options() -> list[tuple[str, str]]:
+    """ADC 中断勾选项。"""
+    return [(item.value, item.label) for item in AdcInterrupt]
+
+
+def adc_channel_options() -> list[tuple[str, str]]:
+    """ADC 通道下拉选项。通道 16/17 标注为内部通道（不占引脚）。"""
+    return [(item.value, item.label) for item in AdcChannel]
 
 
 # --------------------------------------------------------------------------
@@ -1047,9 +1137,153 @@ class TimForm:
 
 
 @dataclass
+class AdcChannelRow:
+    """ADC 规则组表格的一行（一条通道）。"""
+
+    channel: str = AdcChannel.CH0.value
+    sample_time: str = AdcSampleTime.CYCLES_55_5.value
+    port: str = ""
+    pin: str = ""
+    label: str = ""
+
+    @property
+    def is_internal(self) -> bool:
+        """当前选的是否内部通道（温度传感器 / Vrefint）。
+
+        内部通道不接引脚，GUI 据此隐藏端口/引脚两个单元格。
+        """
+        try:
+            return AdcChannel(self.channel).is_internal
+        except ValueError:
+            return False
+
+    @classmethod
+    def from_config(cls, item: AdcChannelConfig) -> AdcChannelRow:
+        return cls(
+            channel=item.channel.value,
+            sample_time=item.sample_time.value,
+            port=item.port.value if item.port is not None else "",
+            pin="" if item.pin is None else str(item.pin),
+            label=item.label,
+        )
+
+    def to_config(self) -> AdcChannelConfig:
+        """转换成模型。
+
+        端口与引脚必须**同时**给或同时留空（模型层会拦），所以这里只在
+        两者都填了时才解析；只填一个时交给模型报错，错误信息更准确。
+        内部通道一律传 None —— 模型层会拒绝给内部通道配引脚。
+        """
+        internal = self.is_internal
+        port_text = "" if internal else self.port.strip()
+        pin_text = "" if internal else self.pin.strip()
+        port = parse_port(port_text) if port_text else None
+        pin = (
+            parse_int(pin_text, name="引脚号", minimum=0, maximum=15)
+            if pin_text
+            else None
+        )
+        return AdcChannelConfig(
+            channel=AdcChannel(self.channel),
+            sample_time=AdcSampleTime(self.sample_time),
+            port=port,
+            pin=pin,
+            label=self.label,
+        )
+
+
+@dataclass
+class AdcForm:
+    """ADC 表单（一个实例 + 它的通道列表）。"""
+
+    instance: str = AdcInstance.ADC1.value
+    mode: str = AdcMode.INDEPENDENT.value
+    prescaler: str = AdcPrescaler.DIV6.value
+    scan_mode: bool = False
+    continuous: bool = False
+    trigger: str = AdcTrigger.SOFTWARE.value
+    data_align: str = AdcDataAlign.RIGHT.value
+    interrupts: list[str] = field(default_factory=list)
+    watchdog: bool = False
+    watchdog_channel: str = ""
+    watchdog_high: str = "4095"
+    watchdog_low: str = "0"
+    calibration: bool = True
+    label: str = ""
+    channels: list[AdcChannelRow] = field(default_factory=list)
+
+    @property
+    def is_dual_mode(self) -> bool:
+        """当前模式是否需要 ADC1+ADC2 成对。"""
+        try:
+            return AdcMode(self.mode).is_dual
+        except ValueError:
+            return False
+
+    @classmethod
+    def from_config(cls, item: AdcConfig) -> AdcForm:
+        return cls(
+            instance=item.instance.value,
+            mode=item.mode.value,
+            prescaler=item.prescaler.value,
+            scan_mode=item.scan_mode,
+            continuous=item.continuous,
+            trigger=item.trigger.value,
+            data_align=item.data_align.value,
+            interrupts=[i.value for i in item.interrupts],
+            watchdog=item.watchdog,
+            watchdog_channel=(
+                item.watchdog_channel.value if item.watchdog_channel else ""
+            ),
+            watchdog_high=str(item.watchdog_high),
+            watchdog_low=str(item.watchdog_low),
+            calibration=item.calibration,
+            label=item.label,
+            channels=[AdcChannelRow.from_config(c) for c in item.channels],
+        )
+
+    def to_config(self) -> AdcConfig:
+        """转换成模型。
+
+        看门狗相关的三项只在 ``watchdog`` 为真时才传实际值，否则一律传
+        默认值 —— 模型层会拒绝「没开看门狗却填了阈值」的组合，而 GUI 里
+        用户很可能先填了再切开关，这时报错反而是噪音。
+        """
+        channels = [row.to_config() for row in self.channels]
+        watchdog_on = self.watchdog
+        high = (
+            parse_int(self.watchdog_high, name="看门狗上限", minimum=0, maximum=0xFFF)
+            if watchdog_on
+            else 0xFFF
+        )
+        low = (
+            parse_int(self.watchdog_low, name="看门狗下限", minimum=0, maximum=0xFFF)
+            if watchdog_on
+            else 0
+        )
+        channel_text = self.watchdog_channel.strip() if watchdog_on else ""
+        return AdcConfig(
+            instance=AdcInstance(self.instance),
+            mode=AdcMode(self.mode),
+            prescaler=AdcPrescaler(self.prescaler),
+            scan_mode=self.scan_mode,
+            continuous=self.continuous,
+            trigger=AdcTrigger(self.trigger),
+            data_align=AdcDataAlign(self.data_align),
+            channels=channels,
+            interrupts=[AdcInterrupt(i) for i in self.interrupts],
+            watchdog=watchdog_on,
+            watchdog_channel=AdcChannel(channel_text) if channel_text else None,
+            watchdog_high=high,
+            watchdog_low=low,
+            calibration=self.calibration,
+            label=self.label,
+        )
+
+
+@dataclass
 class AfioForm:
     """AFIO 表单（只有 SWJ 释放一项可配）。"""
-
     swj_remap: str = AfioSwjRemap.NONE.value
 
     @classmethod
@@ -1089,6 +1323,7 @@ class ConfigForm:
     afio: AfioForm = field(default_factory=AfioForm)
     exti_rows: list[ExtiRow] = field(default_factory=list)
     tim_forms: list[TimForm] = field(default_factory=list)
+    adc_forms: list[AdcForm] = field(default_factory=list)
 
     @classmethod
     def from_config(cls, config: Stm32Config) -> ConfigForm:
@@ -1106,6 +1341,7 @@ class ConfigForm:
             afio=AfioForm.from_config(config.afio),
             exti_rows=[ExtiRow.from_config(item) for item in config.exti],
             tim_forms=[TimForm.from_config(item) for item in config.tim],
+            adc_forms=[AdcForm.from_config(item) for item in config.adc],
         )
 
     def to_config(self) -> ConfigResult:
@@ -1159,6 +1395,13 @@ class ConfigForm:
             except (ValueError, ValidationError) as exc:
                 errors.append(FieldError(f"tim[{index}]", _clean_error(exc)))
 
+        adc: list[AdcConfig] = []
+        for index, form in enumerate(self.adc_forms):
+            try:
+                adc.append(form.to_config())
+            except (ValueError, ValidationError) as exc:
+                errors.append(FieldError(f"adc[{index}]", _clean_error(exc)))
+
         try:
             afio = self.afio.to_config()
         except (ValueError, ValidationError) as exc:
@@ -1182,6 +1425,7 @@ class ConfigForm:
                 afio=afio,
                 exti=exti,
                 tim=tim,
+                adc=adc,
             )
         except ValidationError as exc:
             # 跨字段约束（如「输出模式必须给初始电平」在 row 里已处理，

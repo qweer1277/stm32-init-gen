@@ -816,6 +816,352 @@ class AfioSwjRemap(SymbolBackedEnum):
                 )
 
 
+# --------------------------------------------------------------------------
+# ADC
+# --------------------------------------------------------------------------
+
+# ADC 通道号上限（含）。库的 ``IS_ADC_CHANNEL``（stm32f10x_adc.h:196-212）
+# 允许 0~17：
+#
+#   0~15  = 外部模拟输入引脚 ADCx_IN0 ~ ADCx_IN15
+#   16    = 内部温度传感器（ADC_Channel_TempSensor 的别名）
+#   17    = 内部参考电压 Vrefint（ADC_Channel_Vrefint 的别名）
+#
+# 16/17 是**内部通道**，不接任何引脚 —— 这正是本工具里"通道"与"引脚"
+# 必须分开建模的原因：通道 16 有通道号但没有引脚号。
+ADC_CHANNEL_MIN = 0
+ADC_CHANNEL_MAX = 17
+
+# 内部通道的起始号。>= 16 的通道不从引脚采样。
+ADC_INTERNAL_CHANNEL_MIN = 16
+
+
+class AdcInstance(SymbolBackedEnum):
+    """可用的 ADC 实例。
+
+    只列 STM32F103C8T6/C6T6（中容量 LQFP48）上**真实存在**的 ADC：
+    ADC1 与 ADC2。
+
+    特意不列 ADC3 —— 它只在大容量/互联型上才有（``ADC3_BASE`` 定义在
+    ``stm32f10x.h`` 的 ``#ifdef STM32F10X_HD`` 分支里）。与 ``TimInstance``
+    只列 TIM1~TIM4 是同一个理由：列进来会让 NVIC 代码找不到中断号。
+
+    另一个容易搞错的点：**中容量没有 ``ADC1_IRQn``**。``stm32f10x.h:262-263``
+    的 ``STM32F10X_MD`` 分支里是 ``ADC1_2_IRQn = 18``（ADC1 与 ADC2 共享），
+    ``ADC1_IRQn`` 只出现在 ``STM32F10X_LD_VL`` / ``HD_VL`` 分支里。
+    """
+
+    ADC1 = "ADC1"
+    ADC2 = "ADC2"
+
+    @property
+    def index(self) -> int:
+        """实例编号，1/2。"""
+        return int(self.value[-1])
+
+    @property
+    def clock_macro(self) -> str:
+        """APB2 时钟使能宏，如 ``RCC_APB2Periph_ADC1``。"""
+        return f"RCC_APB2Periph_ADC{self.index}"
+
+    @property
+    def irqn(self) -> str:
+        """中断号枚举名。
+
+        ADC1 与 ADC2 **共用一个** ``ADC1_2_IRQn``（依据 ``stm32f10x.h:262-263``
+        的 ``STM32F10X_MD`` 分支）。所以两个实例都返回同一个名字，
+        生成器必须把它们合并进**一个** ``ADC1_2_IRQHandler``。
+        """
+        return "ADC1_2_IRQn"
+
+    @property
+    def handler_name(self) -> str:
+        """中断服务函数名。
+
+        启动文件 ``Start\\startup_stm32f10x_md.s:171`` 的向量表写的是
+        ``ADC1_2_IRQHandler``（``:333`` 有对应的 ``EXPORT ... [WEAK]``）。
+        """
+        return "ADC1_2_IRQHandler"
+
+
+class AdcChannel(SymbolBackedEnum):
+    """规则组通道。取自 ``stm32f10x_adc.h:174-191``。
+
+    通道号 0~17，其中 0~15 接外部模拟输入引脚，16 是内部温度传感器、
+    17 是内部参考电压 Vrefint。后两个**不占引脚**，所以引脚推导必须
+    先判断 ``is_internal``，否则会去找一个不存在的"Px16"。
+
+    注意库还给了两个别名 ``ADC_Channel_TempSensor`` / ``ADC_Channel_Vrefint``，
+    它们与 16/17 数值相同。本枚举只保留数字名，避免同一个通道出现两种
+    写法导致配置比对（如 `channel in {…}`）出现意外不等。
+    """
+
+    CH0 = "ADC_Channel_0"
+    CH1 = "ADC_Channel_1"
+    CH2 = "ADC_Channel_2"
+    CH3 = "ADC_Channel_3"
+    CH4 = "ADC_Channel_4"
+    CH5 = "ADC_Channel_5"
+    CH6 = "ADC_Channel_6"
+    CH7 = "ADC_Channel_7"
+    CH8 = "ADC_Channel_8"
+    CH9 = "ADC_Channel_9"
+    CH10 = "ADC_Channel_10"
+    CH11 = "ADC_Channel_11"
+    CH12 = "ADC_Channel_12"
+    CH13 = "ADC_Channel_13"
+    CH14 = "ADC_Channel_14"
+    CH15 = "ADC_Channel_15"
+    CH16 = "ADC_Channel_16"
+    CH17 = "ADC_Channel_17"
+
+    @property
+    def number(self) -> int:
+        """通道号 0~17。"""
+        return int(self.name.replace("CH", ""))
+
+    @property
+    def is_internal(self) -> bool:
+        """是否内部通道（温度传感器 / Vrefint），不占引脚。"""
+        return self.number >= ADC_INTERNAL_CHANNEL_MIN
+
+    @property
+    def label(self) -> str:
+        """给 GUI 下拉用的中文说明。"""
+        if self is AdcChannel.CH16:
+            return "通道 16（内部温度传感器）"
+        if self is AdcChannel.CH17:
+            return "通道 17（内部参考电压 Vrefint）"
+        return f"通道 {self.number}"
+
+
+class AdcMode(SymbolBackedEnum):
+    """ADC 工作模式。取自 ``stm32f10x_adc.h:94-103`` 的 ADC_mode 组。
+
+    除 ``INDEPENDENT`` 外都是**双 ADC 模式**：它们要 ADC1 与 ADC2 配对
+    使用，库里由 ``ADC_Init`` 把模式值写进 ADC1 的 ``CR1.DUALMOD``。
+
+    本工具的配置粒度是「每个实例一份配置」，而双 ADC 模式的参数必须
+    同时写在两个实例上（两者的 ``ADC_Mode`` 要一致），所以校验层会就
+    "选了双模式却只配了一个实例"给出警告（``adc.dual_mode_needs_pair``）。
+    """
+
+    INDEPENDENT = "ADC_Mode_Independent"
+    REG_INJEC_SIMULT = "ADC_Mode_RegInjecSimult"
+    REG_SIMULT_ALTER_TRIG = "ADC_Mode_RegSimult_AlterTrig"
+    INJEC_SIMULT_FAST_INTERL = "ADC_Mode_InjecSimult_FastInterl"
+    INJEC_SIMULT_SLOW_INTERL = "ADC_Mode_InjecSimult_SlowInterl"
+    INJEC_SIMULT = "ADC_Mode_InjecSimult"
+    REG_SIMULT = "ADC_Mode_RegSimult"
+    FAST_INTERL = "ADC_Mode_FastInterl"
+    SLOW_INTERL = "ADC_Mode_SlowInterl"
+    ALTER_TRIG = "ADC_Mode_AlterTrig"
+
+    @property
+    def is_independent(self) -> bool:
+        """是否独立模式（单 ADC 可用）。"""
+        return self is AdcMode.INDEPENDENT
+
+    @property
+    def is_dual(self) -> bool:
+        """是否需要 ADC1 + ADC2 成对工作。"""
+        return not self.is_independent
+
+    @property
+    def is_interleaved(self) -> bool:
+        """是否交替采样模式（Fast/Slow Interleaved）。
+
+        交替模式下两个 ADC 轮流采样同一通道，等效采样率翻倍。
+        """
+        return self in (
+            AdcMode.INJEC_SIMULT_FAST_INTERL,
+            AdcMode.INJEC_SIMULT_SLOW_INTERL,
+            AdcMode.FAST_INTERL,
+            AdcMode.SLOW_INTERL,
+        )
+
+
+class AdcTrigger(SymbolBackedEnum):
+    """规则通道的外部触发源。取自 ``stm32f10x_adc.h:123-138``。
+
+    **命名陷阱**：``ADC_ExternalTrigConv_None`` 不是"没有触发"，它的实际
+    含义是**软件触发**（SWSTART）—— 库把 ``EXTI[2:0] = 111`` 命名为 None，
+    而写 ``CR2.EXTSEL=111`` 后转换只由 ``ADC_SoftwareStartConvCmd`` 启动。
+    用户选它之后仍要调 ``ADC_SoftwareStartConvCmd(ENABLE)``，这一点写进
+    生成代码的注释，否则会以为"选了 None 就自动转换"。
+
+    另一处陷阱：``_T3_CC1`` / ``_T2_CC3`` / ``_T8_CC1`` / ``_T8_TRGO`` /
+    ``_T5_CC1`` / ``_T5_CC3`` 六个宏**只对 ADC3 有效**（``/**< For ADC3 only */``）。
+    C8T6 上没有 ADC3，选了它们等于不触发 —— 校验层报 ERROR。
+    """
+
+    # 软件触发（库里叫 None）。空值会让生成器什么都不写，而 CR2.EXTSEL
+    # 的复位值 0x000E0000 恰好就等于 ADC_ExternalTrigConv_None，
+    # 所以这里的值必须是真的宏名，不能像 TimRemap 那样用空串。
+    SOFTWARE = "ADC_ExternalTrigConv_None"
+    T1_CC1 = "ADC_ExternalTrigConv_T1_CC1"
+    T1_CC2 = "ADC_ExternalTrigConv_T1_CC2"
+    T1_CC3 = "ADC_ExternalTrigConv_T1_CC3"
+    T2_CC2 = "ADC_ExternalTrigConv_T2_CC2"
+    T3_TRGO = "ADC_ExternalTrigConv_T3_TRGO"
+    T4_CC4 = "ADC_ExternalTrigConv_T4_CC4"
+    EXT_IT11_TIM8_TRGO = "ADC_ExternalTrigConv_Ext_IT11_TIM8_TRGO"
+    # 以下 6 个只对 ADC3 有效
+    T3_CC1 = "ADC_ExternalTrigConv_T3_CC1"
+    T2_CC3 = "ADC_ExternalTrigConv_T2_CC3"
+    T8_CC1 = "ADC_ExternalTrigConv_T8_CC1"
+    T8_TRGO = "ADC_ExternalTrigConv_T8_TRGO"
+    T5_CC1 = "ADC_ExternalTrigConv_T5_CC1"
+    T5_CC3 = "ADC_ExternalTrigConv_T5_CC3"
+
+    @property
+    def is_software(self) -> bool:
+        """是否软件触发（需要生成 ``ADC_SoftwareStartConvCmd``）。"""
+        return self is AdcTrigger.SOFTWARE
+
+    @property
+    def adc3_only(self) -> bool:
+        """是否只对 ADC3 有效（C8T6 上不可用）。"""
+        return self in (
+            AdcTrigger.T3_CC1,
+            AdcTrigger.T2_CC3,
+            AdcTrigger.T8_CC1,
+            AdcTrigger.T8_TRGO,
+            AdcTrigger.T5_CC1,
+            AdcTrigger.T5_CC3,
+        )
+
+    @property
+    def label(self) -> str:
+        """给 GUI 下拉用的中文说明。"""
+        return {
+            AdcTrigger.SOFTWARE: "软件触发（ADC_SoftwareStartConvCmd）",
+            AdcTrigger.T1_CC1: "TIM1_CC1",
+            AdcTrigger.T1_CC2: "TIM1_CC2",
+            AdcTrigger.T1_CC3: "TIM1_CC3",
+            AdcTrigger.T2_CC2: "TIM2_CC2",
+            AdcTrigger.T3_TRGO: "TIM3_TRGO",
+            AdcTrigger.T4_CC4: "TIM4_CC4",
+            AdcTrigger.EXT_IT11_TIM8_TRGO: "EXTI11 / TIM8_TRGO",
+            AdcTrigger.T3_CC1: "TIM3_CC1（仅 ADC3）",
+            AdcTrigger.T2_CC3: "TIM2_CC3（仅 ADC3）",
+            AdcTrigger.T8_CC1: "TIM8_CC1（仅 ADC3）",
+            AdcTrigger.T8_TRGO: "TIM8_TRGO（仅 ADC3）",
+            AdcTrigger.T5_CC1: "TIM5_CC1（仅 ADC3）",
+            AdcTrigger.T5_CC3: "TIM5_CC3（仅 ADC3）",
+        }[self]
+
+    @classmethod
+    def options_for_chip(
+        cls, *, has_adc3: bool = False
+    ) -> tuple[AdcTrigger, ...]:
+        """本芯片上可用的触发源（没有 ADC3 时剔除 6 个 ADC3 专属选项）。"""
+        return tuple(
+            item for item in cls if has_adc3 or not item.adc3_only
+        )
+
+
+class AdcSampleTime(SymbolBackedEnum):
+    """采样时间。取自 ``stm32f10x_adc.h:213-220`` 的 ADC_sample_time 组。
+
+    采样时间越长，允许的信号源阻抗越高（采样电容有更长时间充电），
+    但单次转换也越慢。换算成秒要除以 ADCCLK：
+    ``t_sample = cycles / ADCCLK``，换算成转换总时间还要加上 12.5 个
+    固定周期（``t_total = (cycles + 12.5) / ADCCLK``）。
+    """
+
+    CYCLES_1_5 = "ADC_SampleTime_1Cycles5"
+    CYCLES_7_5 = "ADC_SampleTime_7Cycles5"
+    CYCLES_13_5 = "ADC_SampleTime_13Cycles5"
+    CYCLES_28_5 = "ADC_SampleTime_28Cycles5"
+    CYCLES_41_5 = "ADC_SampleTime_41Cycles5"
+    CYCLES_55_5 = "ADC_SampleTime_55Cycles5"
+    CYCLES_71_5 = "ADC_SampleTime_71Cycles5"
+    CYCLES_239_5 = "ADC_SampleTime_239Cycles5"
+
+    @property
+    def cycles(self) -> float:
+        """采样周期的数值（单位：ADCCLK 周期）。"""
+        return {
+            AdcSampleTime.CYCLES_1_5: 1.5,
+            AdcSampleTime.CYCLES_7_5: 7.5,
+            AdcSampleTime.CYCLES_13_5: 13.5,
+            AdcSampleTime.CYCLES_28_5: 28.5,
+            AdcSampleTime.CYCLES_41_5: 41.5,
+            AdcSampleTime.CYCLES_55_5: 55.5,
+            AdcSampleTime.CYCLES_71_5: 71.5,
+            AdcSampleTime.CYCLES_239_5: 239.5,
+        }[self]
+
+    @property
+    def label(self) -> str:
+        return f"{self.cycles:g} 周期"
+
+
+class AdcDataAlign(SymbolBackedEnum):
+    """转换结果对齐方式。取自 ``stm32f10x_adc.h:162-163``。
+
+    12 位结果放进 16 位数据寄存器：右对齐时高位补 0（取值 0~4095），
+    左对齐时低位补 0（取值 0~65520）。右对齐是绝大多数场合的正确选择。
+    """
+
+    RIGHT = "ADC_DataAlign_Right"
+    LEFT = "ADC_DataAlign_Left"
+
+
+class AdcPrescaler(SymbolBackedEnum):
+    """ADCCLK 分频。取自 ``stm32f10x_rcc.h:425-428``。
+
+    **ADCCLK 由 PCLK2 统一分频而来，不是 PCLK1**，而且上限是 14MHz
+    （STM32F103 数据手册的 ADC 特性；本工具按此给 WARNING）。
+    72MHz 的 PCLK2 必须至少 ÷6 才不超频 —— 这是最容易漏的一条。
+    """
+
+    DIV2 = "RCC_PCLK2_Div2"
+    DIV4 = "RCC_PCLK2_Div4"
+    DIV6 = "RCC_PCLK2_Div6"
+    DIV8 = "RCC_PCLK2_Div8"
+
+    @property
+    def divider(self) -> int:
+        """分频系数 2/4/6/8。"""
+        return int(self.name.replace("DIV", ""))
+
+    @property
+    def label(self) -> str:
+        return f"PCLK2 ÷{self.divider}"
+
+
+class AdcInterrupt(SymbolBackedEnum):
+    """可按需使能的 ADC 中断。取自 ``stm32f10x_adc.h:313-315``。"""
+
+    EOC = "ADC_IT_EOC"  # 规则通道转换结束
+    JEOC = "ADC_IT_JEOC"  # 注入通道转换结束
+    AWD = "ADC_IT_AWD"  # 模拟看门狗越界
+
+    @property
+    def flag(self) -> str:
+        """该中断对应的挂起标志宏（``ADC_GetFlagStatus`` 用）。
+
+        ``ADC_ClearITPendingBit`` 与 ``ADC_GetFlagStatus`` 的参数类型不同：
+        前者收 ``uint16_t ADC_IT``，后者收 ``uint8_t ADC_FLAG``。
+        写 ISR 时两套宏都要用对，这是本模块把它们分开暴露的原因。
+        """
+        return {
+            AdcInterrupt.EOC: "ADC_FLAG_EOC",
+            AdcInterrupt.JEOC: "ADC_FLAG_JEOC",
+            AdcInterrupt.AWD: "ADC_FLAG_AWD",
+        }[self]
+
+    @property
+    def label(self) -> str:
+        return {
+            AdcInterrupt.EOC: "规则通道转换结束",
+            AdcInterrupt.JEOC: "注入通道转换结束",
+            AdcInterrupt.AWD: "模拟看门狗越界",
+        }[self]
+
+
 # 本模块定义的、需要校验符号存在性的枚举类。
 #
 # RCC 与 Flash 相关的枚举在 ``models/rcc.py`` 里（它们需要本模块的
@@ -850,6 +1196,14 @@ SYMBOL_BACKED_ENUMS: tuple[type[SymbolBackedEnum], ...] = (
     TimInterrupt,
     TimRemap,
     AfioSwjRemap,
+    AdcInstance,
+    AdcChannel,
+    AdcMode,
+    AdcTrigger,
+    AdcSampleTime,
+    AdcDataAlign,
+    AdcPrescaler,
+    AdcInterrupt,
 )
 
 

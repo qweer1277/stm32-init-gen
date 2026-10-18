@@ -1,35 +1,36 @@
-# stm32-init-gen
+# stm32-init-gen · 核心库
 
 STM32 标准外设库（StdPeriph V3.5.0）**初始化代码生成器**：库 + 命令行。
 
 - 目标芯片：STM32F103C8T6（中容量，`STM32F10X_MD`）
-- 首批外设：GPIO、USART、NVIC
+- 外设：GPIO、USART、NVIC、EXTI、AFIO、TIM、**ADC**
 - 技术栈：Python 3.10+ / Pydantic v2 / Jinja2 / PyYAML（**不含 GUI 依赖**）
 - 生成代码**只使用标准外设库**，禁止 HAL / LL
 
-> 桌面界面在同仓库的 [`gui\`](../gui) 目录（包名 `stm32gen_gui`）。
+> 桌面界面在同仓库的 [`gui\`](../gui)（包名 `stm32gen_gui`）。
 > 本目录只做「配置模型 → 校验 → 生成」，可单独当库用、单独跑 CLI。
-> 依赖方向严格单向：`gui` → `core`，核心库不反向引用界面。
+> 方向是单向的：界面 → 本包，本包不反向引用界面。
 
 ## 目录结构：工具与成果分开
 
 生成产物**不落在源码树里**，默认写到源码树旁边的同级目录：
 
 ```
-stm32-init-gen-repo\           仓库根（monorepo）
+<checkout>\
 ├─ core\                       本包：源码、测试、模板、示例配置、文档
 │  ├─ src\stm32gen\
 │  ├─ tests\
 │  ├─ examples\
 │  ├─ tools\                   辅助脚本（符号提取、反编造检查）
-│  └─ scripts\
-├─ gui\                        桌面界面（依赖 core，不反向被依赖）
+│  └─ docs\
+├─ gui\                        桌面界面（依赖 core 的库，见 gui\README.md）
 │  ├─ src\stm32gen_gui\
 │  ├─ tests\
 │  └─ docs\GUI-使用说明.md
-└─ stm32-init-gen-output\      成果：生成的 C 代码（19 个，或合并的 3 个）
+└─ stm32-init-gen-output\      成果：生成的 C 代码（21 个，或合并的 3 个）
    ├─ bsp_init.c / .h
    ├─ bsp_rcc.c / .h
+   ├─ bsp_adc.c / .h
    └─ …
 ```
 
@@ -78,8 +79,14 @@ set STM32_STDLIB_ROOT=D:\path\to\STM32F10x_StdPeriph_Lib
 |---|---|
 | `generate` / `validate` | 正常工作 |
 | `selftest` | 打印 `[ -- ] 标准库目录未配置（不影响生成）`，不判失败 |
-| `--compile` | 报错并提示怎么设置环境变量 |
-| `pytest` | 跳过依赖标准库源码的用例（`test_compile.py` / `test_keil.py` 等，共 85 项），其余 536 项照跑 |
+| `--compile` | 打印 `[ -- ] 未设置标准库代码根目录，无法做真实目标编译` 并给出设置示例，退出码 1 |
+| GUI 的「编译验证」 | 弹「编译验证不可用」并给出设置示例，不写入问题面板 |
+| `pytest` | 跳过依赖标准库源码的用例（`test_compile.py` / `test_keil.py` 等，共 87 项），其余 641 项照跑 |
+
+**为什么编译验证要前置拦截**：不拦的话编译器会为每个 `bsp_*.h` 各报一条
+`'stm32f10x.h' file not found`（实测 11 条），真正的根因（环境变量没设）
+被埋在这些错误下面，用户会去查自己生成的代码 —— 方向就错了。宿主 gcc
+降级不做这个检查：它只做语法检查，本来就不需要标准库头文件。
 
 工程宏约定（依据 `Start\stm32f10x.h`）：
 
@@ -91,10 +98,10 @@ set STM32_STDLIB_ROOT=D:\path\to\STM32F10x_StdPeriph_Lib
 
 ## 分层架构
 
-依赖方向**单向向下**。GUI 已拆成独立项目，它依赖本包，本包不认识它：
+依赖方向**单向向下**。GUI 在同仓库的 `gui\`，它依赖本包，本包不认识它：
 
 ```
-stm32gen_gui（独立项目）──▶ models ──▶ stdlib_ref
+stm32gen_gui（gui\，独立包）──▶ models ──▶ stdlib_ref
                               │
                               ▼
                           validate ──▶ generator ──▶ templates
@@ -130,7 +137,7 @@ python -m stm32gen --version
 python -m stm32gen selftest
 ```
 
-要图形界面，再装旁边那个项目（它会把本包当依赖，共用同一个 venv 即可）：
+要图形界面，再装同仓库的 `gui`（它会把本包当依赖，共用同一个 venv 即可）：
 
 ```powershell
 python -m pip install -e ..\gui
@@ -162,7 +169,7 @@ python tools\check_no_invented.py ..\stm32-init-gen-output\
 python tools\check_no_invented.py --selftest    # 护栏自测
 ```
 
-当前实测规模：**宏 6572 / 枚举值 80 / 函数 473 / 类型 79**，来自 28 个头文件。
+当前实测规模：**宏 6572 / 枚举值 80 / 函数 478 / 类型 79**，来自 28 个头文件。
 提取器带 58 项关键符号自检（含数值比对），任何一个不符就以非零码退出。
 
 反编造护栏的两条硬性要求，都有测试守着：
@@ -179,12 +186,17 @@ python tools\check_no_invented.py --selftest    # 护栏自测
 CLI 读 JSON/YAML → 构造模型；生成器只接受 `Stm32Config`。
 
 ```
-chip.py   芯片规格（型号 → 器件宏、可用端口、可用 USART 实例）
-enums.py  与标准库宏/枚举一一对应的配置枚举
-gpio.py   GpioPinConfig
-usart.py  UsartConfig
-nvic.py   NvicConfig / NvicChannelConfig
-base.py   Stm32Config 根模型
+chip.py      芯片规格（型号 → 器件宏、可用端口、可用 USART / ADC 实例）
+enums.py     与标准库宏/枚举一一对应的配置枚举
+gpio.py      GpioPinConfig
+usart.py     UsartConfig
+nvic.py      NvicConfig / NvicChannelConfig
+exti.py      ExtiLineConfig
+tim.py       TimConfig / TimChannelConfig（+ PSC/ARR 反算）
+tim_pins.py  TIM 通道默认复用引脚表（仅供参考，无数据手册）
+adc.py       AdcConfig / AdcChannelConfig
+adc_pins.py  ADC 通道默认引脚表（仅供参考，无数据手册）
+base.py      Stm32Config 根模型
 ```
 
 ### 反编造约束在这里怎么落地
@@ -402,6 +414,22 @@ rules.py      五组规则：check_chip / check_pins / check_usart / check_nvic 
 | `nvic.group_note` | INFO | 分组位宽 + 只能调用一次的限制 |
 | `gpio.floating_input` | WARNING | 浮空输入，悬空时电平不确定 |
 | `gpio.analog_mode` / `gpio.low_speed_output` / `gpio.alternate_mode` | INFO | 模式与速度的提示 |
+| `adc.duplicate_instance` | ERROR | 同一 ADC 实例配了多次 |
+| `adc.prescaler_conflict` | ERROR | 多个 ADC 实例配了不同的 ADCCLK 分频（ADCPRE 只有一份，后写的覆盖前者） |
+| `adc.dual_mode_needs_pair` | ERROR | 选了双 ADC 模式却只配了一个实例 |
+| `adc.dual_mode_mismatch` | ERROR | ADC1 与 ADC2 的 mode 不一致（DUALMOD 只有一份） |
+| `adc.irq_without_nvic` | ERROR | 使能了 ADC 中断但没配 `ADC1_2_IRQn` 通道 |
+| `adc.clock_over_spec` | **WARNING** | ADCCLK 超 14MHz（数据手册值，库不检查，故不拦生成） |
+| `adc.pin_not_default` | **WARNING** | 引脚与该通道常见的默认位置不一致（无数据手册，只提示） |
+| `adc.trigger_timer_missing` | WARNING | 外部触发源依赖的定时器没配置（可能由用户代码初始化，故不拦） |
+| `adc.irq_nvic_disabled` | WARNING | 使能了中断但 NVIC 通道是禁用状态 |
+| `adc.nvic_without_irq` | WARNING | 配了 ADC 的 NVIC 通道但没使能中断 |
+| `adc.clock_far_below_max` | INFO | ADCCLK 远低于上限 |
+| `adc.shared_irq_channel` | INFO | ADC1 与 ADC2 共用中断通道 |
+| `adc.pin_not_configured` | INFO | 外部通道没指定引脚（引脚可能由用户别处配） |
+| `adc.frequency_summary` | INFO | 附 ADCCLK、总转换周期与最高采样率，便于核对 |
+| `adc.software_trigger_note` | INFO | 软件触发且非连续转换，每轮需重新启动 |
+| `adc.short_sample_time` | INFO | 采样时间过短，对信号源内阻要求高 |
 | `config.empty` | INFO | 没有任何外设配置 |
 | `internal.rule_failed` | ERROR | 规则自身崩溃（工具缺陷） |
 
@@ -427,14 +455,14 @@ rules.py      五组规则：check_chip / check_pins / check_usart / check_nvic 
 ```
 generator/
 ├── context.py   配置模型 → 模板上下文（所有计算与条件都在这里）
-├── render.py    Jinja2 渲染，返回 GeneratedFile 列表（OUTPUT_SPECS 声明 19 个产物）
+├── render.py    Jinja2 渲染，返回 GeneratedFile 列表（OUTPUT_SPECS 声明 21 个产物）
 └── types.py     GeneratedFile / GenerateResult
 ```
 
 模板与产物一一对应，见上面「产物」表。模板目录里的 `.j2` 与 `render.py` 的
 `OUTPUT_SPECS` 必须同步——`test_all_templates_exist` 会检查这一点。
 
-### 产物（按外设分文件，共 19 个；也可合并成 3 个）
+### 产物（按外设分文件，共 21 个；也可合并成 3 个）
 
 | 文件 | 内容 |
 |---|---|
@@ -442,12 +470,13 @@ generator/
 | `bsp_init.c` | 按顺序调用各外设 init 的编排（不含外设细节） |
 | `bsp_rcc.h` / `bsp_rcc.c` | 系统时钟：Flash 等待周期、HSE/PLL/总线分频、SYSCLK 切换；头文件给出 `BSP_xxx_HZ` 频率常量 |
 | `bsp_afio.h` / `bsp_afio.c` | AFIO 时钟、**全部引脚重映射**（USART + TIM）、SWJ 调试口释放 |
-| `bsp_gpio.h` / `bsp_gpio.c` | 端口时钟与全部 `GPIO_Init`（含 USART 的 TX/RX、EXTI 的输入引脚、TIM 的 PWM 输出引脚）、带标签引脚的宏 |
+| `bsp_gpio.h` / `bsp_gpio.c` | 端口时钟与全部 `GPIO_Init`（含 USART 的 TX/RX、EXTI 的输入引脚、TIM 的 PWM 输出引脚、ADC 的模拟输入引脚）、带标签引脚的宏 |
 | `bsp_exti.h` / `bsp_exti.c` | 外部中断线选择（`GPIO_EXTILineConfig`）与边沿配置 |
 | `bsp_usart.h` / `bsp_usart.c` | 实例时钟、`USART_Init`、中断使能、`USART_Cmd` |
 | `bsp_tim.h` / `bsp_tim.c` | 时基、输出比较（每通道 `TIM_OCxInit`）、预装载、高级定时器主输出 |
+| `bsp_adc.h` / `bsp_adc.c` | ADCCLK 分频、`ADC_Init`、规则组序列、模拟看门狗、校准、中断使能 |
 | `bsp_nvic.h` / `bsp_nvic.c` | 优先级分组与各通道 `NVIC_Init` |
-| `bsp_it.h` / `bsp_it.c` | USART / EXTI / TIM 中断服务函数骨架 |
+| `bsp_it.h` / `bsp_it.c` | USART / EXTI / TIM / ADC 中断服务函数骨架 |
 | `main.c` | 最小可编译的 main，调用 `bsp_init()` |
 
 **为什么按外设拆**：删掉某个外设时，它的模板、上下文、时钟使能一起消失，
@@ -483,12 +512,12 @@ USART 实例时钟在 `bsp_usart.c`，TIM 实例时钟在 `bsp_tim.c`。
 
 ### 两种产物布局：分文件（默认）/ 合并
 
-一次生成要往工程里塞 19 个文件，对只想看效果、或工程里已有自己 BSP 的人来说
+一次生成要往工程里塞 21 个文件，对只想看效果、或工程里已有自己 BSP 的人来说
 是负担。所以生成器支持第二种形态：
 
 | 布局 | 产物 | 选用方式 |
 |---|---|---|
-| `split`（默认） | 上表 19 个文件 | 不传参数即是 |
+| `split`（默认） | 上表 21 个文件 | 不传参数即是 |
 | `merged` | `bsp.h` + `bsp.c` + `main.c` | CLI `--layout merged`；GUI 预览区「布局」下拉 |
 
 ```bash
@@ -498,7 +527,7 @@ python -m stm32gen generate config.json --layout merged
 合并**不是另写一套模板**，而是渲染完成后对 19 份文本做一次纯函数变换
 （`generator/merge.py`）：剥掉每个文件的头注释、include guard、`extern "C"`
 包裹、`#include "stm32f10x.h"`、`#include "bsp_xxx.h"` 与版权尾注，正文一行不动，
-按 `bsp_init → rcc → afio → gpio → exti → usart → tim → nvic → it` 的顺序拼起来。
+按 `bsp_init → rcc → afio → gpio → exti → usart → tim → adc → nvic → it` 的顺序拼起来。
 
 这么做的理由：
 
@@ -533,10 +562,35 @@ python -m stm32gen generate config.json --layout merged
 | 库没有 `TIM_OCInit`，只有 `TIM_OC1Init`~`TIM_OC4Init` | 猜函数名会编译失败 | `TimChannel.init_function` 按通道派生 |
 | `RCC_HCLKConfig` 与 `RCC_PCLK1Config` 用**不同**的分频宏 | 喂错不报错，静默写坏寄存器位 | 见 `models/rcc.py` 的分组说明 |
 
-### 关于 TIM 默认引脚表的可信度
+### ADC 的几处硬件约束
+
+| 约束 | 后果 | 处理 |
+|---|---|---|
+| **模拟输入必须是 `GPIO_Mode_AIN`** | 配成数字输入模式时施密特触发器介入，采样值被钳位 → 「永远是 0 或 4095」 | `AdcChannelConfig.pin_mode` 恒为 `AIN`；`validate/pins.py` 标 `PinDirection.ANALOG` |
+| **`AIN` 独占引脚** | 数字输入缓冲被关闭，此时任何数字外设都读不到该引脚 | `classify_conflict` 判成 `ANALOG_MIXED`（**ERROR**） |
+| **中容量没有 `ADC1_IRQn`** | 真名是 `ADC1_2_IRQn`（ADC1/ADC2 共用），写错名字编译失败 | `AdcInstance.irqn` 恒返回 `ADC1_2_IRQn`（依据 `stm32f10x.h:262-263` 的 `STM32F10X_MD` 分支） |
+| **ADC1 与 ADC2 共享一个中断向量** | 生成两个同名 handler 会重复定义 | `_build_adc()` 按 handler 分组，只出一个 `ADC1_2_IRQHandler`，内部按实例分派 |
+| **ADCCLK 上限 14MHz，但库不检查** | `IS_RCC_ADCCLK` 只查取值是否为四个分频宏之一，超频不报错 → 精度下降、通道串扰 | `adc.clock_over_spec`（**WARNING**，数据手册值不作硬错误） |
+| **ADCCLK 分频全局只有一份** | `RCC_CFGR` 的 ADCPRE 位被 ADC1/ADC2 共用，两次 `RCC_ADCCLKConfig` 后者覆盖前者 | `adc.prescaler_conflict`（**ERROR**）+ 模板只生成一次调用 |
+| **校准状态函数返回值反直觉** | `ADC_GetResetCalibrationStatus` 返回 `SET` 表示「该位还在」（校准进行中），`RESET` 才是完成 | 等待循环判 `!= SET`，并加 `test_calibration_status_polarity_is_reset` 反向断言 |
+| **校准必须在 `ADC_Cmd` 之前** | 先开 ADON 再校准，首次转换结果不可信 | 模板顺序固定，`test_calibration_before_adc_enable` 用 `index()` 守顺序 |
+| **`ADC_ExternalTrigConv_None` 不是「无触发」** | 它的实际含义是软件触发（SWSTART），不调 `ADC_SoftwareStartConvCmd` 一次都不转换 | `AdcTrigger.SOFTWARE` + 生成启动命令 + 注释说明 |
+| **看门狗监控通道必须显式指定** | 只调 `ADC_AnalogWatchdogCmd` 而不调 `SingleChannelConfig`，库按通道 0 处理 → 盯错通道 | `watchdog_channel` 字段，默认取序列第一条 |
+| **6 个触发源只对 ADC3 有效** | C8T6 上没有 ADC3，选了等于不触发 | `AdcTrigger.adc3_only`，模型层直接拒绝 |
+| **通道 16/17 是内部通道** | 温度传感器与 Vrefint 不接任何引脚，按通道号当引脚算会去找不存在的 Px16 | `AdcChannel.is_internal`，配了引脚直接报错 |
+
+### 关于 ADC 通道/引脚表的可信度
+
+与 TIM 的默认引脚表同样的处理（见上一节）：`models/adc_pins.py` 里那张
+「通道号 → 引脚」表**没有数据手册可核**，所以只用于 GUI 建议值与
+`adc.pin_not_default` 的 **WARNING**，绝不作为拦截依据，**生成代码不依赖它**。
+
+真正决定引脚的是用户的 `AdcChannelConfig.port/pin`。
+
+### TIM 默认引脚表的可信度
 
 `src/stm32gen/models/tim_pins.py` 里有一张各定时器通道的默认复用引脚表，
-但开发它的环境只有标准外设库源码、**没有数据手册**，也无法联网核对。
+但本环境只有标准外设库源码、**没有数据手册**，也无法联网核对。
 因此这张表被刻意限制为：
 
 - **只用于提示，不用于拦截** —— 校验层对比时只报 WARNING
@@ -637,11 +691,14 @@ C 代码里的静默空值会产出语法错误，且很难定位。
 
 ### 生成代码里几个体现「为什么」的顺序
 
-**1. `bsp_init()` 的调用顺序不可调换** —— 时钟 → GPIO → USART → NVIC。
+**1. `bsp_init()` 的调用顺序不可调换** ——
+时钟 → 重映射 → GPIO → EXTI → USART → TIM → ADC → NVIC。
 
 - 时钟必须最先：外设寄存器写操作依赖总线时钟，没配好时后续配置**全部白写**
   （这是最常见的「配了没用」原因）。`bsp_rcc_init()` 同时把 Flash 等待周期设好，
   保证接下来 HCLK 拉高后取指稳定。
+- 重映射（`bsp_afio_init()`）必须在 `GPIO_Init` **之前**：它改的是引脚的复用
+  功能来源，配好之后再设引脚模式才有意义。
 - NVIC 放最后：中断通道一开中断立刻可以进，此时外设已配置完毕，
   不会出现「中断进了但外设还没配好」的窗口。
 
@@ -694,15 +751,15 @@ GPIO_Init(GPIOC, &GPIO_InitStructure);       /* 再切输出模式 */
 （含空配置、仅 USART、重映射、多中断、混合 GPIO）跑一遍护栏，
 确保**输出**层面也没有编造符号。
 
-## 桌面界面（独立项目）
+## 桌面界面（同仓库的 `gui\`）
 
-图形界面不在本仓库，见 [`stm32-init-gen-gui`](../gui)：
+图形界面见 [`../gui`](../gui)：
 
-- 使用说明（含各页签截图与常见问题）：`stm32-init-gen-gui/docs/GUI-使用说明.md`
-- 安装：`pip install -e ..\gui`，然后 `stm32-init-gui`
+- 使用说明（含各页签截图与常见问题）：`gui/docs/GUI-使用说明.md`
+- 安装：`pip install -e ..\gui`，然后 `python -m stm32gen_gui`
 - 界面侧自检：`python -m stm32gen_gui --selfcheck`
 
-为什么拆出去：PySide6 是重量级依赖（本机约 200 MB），而生成器与 CLI 的
+为什么分成两个包：PySide6 是重量级依赖（约 200 MB），而生成器与 CLI 的
 常见用法是脚本、CI、批处理 —— 那些场景根本不需要 Qt。合在一起时
 `pip install stm32-init-gen` 会连带装一整套 GUI 框架。拆开后核心库的
 依赖只有 Pydantic / Jinja2 / PyYAML。
@@ -889,23 +946,26 @@ python -m ruff check src tools tests
 | 文件 | 数量 | 覆盖 |
 |---|---|---|
 | `test_symbols.py` | 73 | 符号索引：数值精确性、条件编译、结构体成员 |
-| `test_generator.py` | 102 | 上下文构建、渲染、按外设分文件的产物结构、条件分支、反编造集成、**合并布局**（3 文件、单 guard、正文逐字节不变、形态变化时抛 MergeError） |
+| `test_generator.py` | 111 | 上下文构建、渲染、按外设分文件的产物结构、条件分支、反编造集成、**合并布局**（3 文件、单 guard、正文逐字节不变、形态变化时抛 MergeError） |
 | `test_models.py` | 67 | 模型层：反编造、组合约束、芯片规格、别名解析 |
-| `test_validate.py` | 70 | 八组校验规则的正例与反例（含 Flash 等待周期对比、引脚冲突按方向分级） |
+| `test_validate.py` | 70 | 九组校验规则的正例与反例（含 Flash 等待周期对比、引脚冲突按方向分级） |
 | `test_peripherals.py` | 54 | EXTI / AFIO / TIM **模型层**：枚举派生属性、频率数学、组合约束、芯片规格、`used_ports` 与 `needs_afio_clock` 推导、PSC/ARR 反算、**外部时钟三来源与 ETR 预分频串联** |
 | `test_peripherals_validate.py` | 41 | EXTI / AFIO / TIM 的**校验与生成**：SWJ_ERROR、同线冲突、共享通道合并、重映射归 AFIO、MOE、非默认引脚只警告、外部时钟频率未知只 INFO、ITR 级联提示 |
-| `test_cli.py` | 47 | 退出码契约、拒绝生成、编译模式、覆盖策略、`--layout merged` 的产物与真编译 |
+| `test_adc.py` | 54 | ADC **模型层**：8 个枚举的派生属性、通道/引脚分离（16/17 为内部通道）、ADCCLK 与转换周期数学、看门狗组合约束、芯片一致性（ADC3 不存在、PC12 未引出） |
+| `test_adc_validate.py` | 51 | ADC 的**校验与生成**：ADCCLK 超频只 WARN、引脚非默认只 WARN、触发定时器缺失只 WARN、双模式配对 ERROR、分频冲突 ERROR、共享 `ADC1_2_IRQHandler` 只出一个、校准顺序与极性、看门狗通道显式指定、符号收集完整性 |
+| `test_cli.py` | 55 | 退出码契约、拒绝生成、编译模式、覆盖策略、`--layout merged` 的产物与真编译、**未配标准库时给引导而非甩一串找不到头文件** |
 | `test_compile.py` | 35 | 诊断解析、命令构造、真实编译与错误检出 |
 | `test_serializers.py` | 32 | JSON/YAML 往返、错误路径 |
 | `test_baudrate.py` | 28 | 时钟树、BRR 复算、可表示性 |
 | `test_tools.py` | 30 | 提取器与护栏本身（含 ST 惯例结构体变量名的豁免） |
 | `test_keil.py` | 27 | AC5/AC6 参数与诊断差异、两套编译器各自的编译与错误检出 |
 
-合计 **621 项，本机实测全部通过（0 跳过）**。
+合计 **728 项**（本机设了 `STM32_STDLIB_ROOT` 时实测 728 passed、0 跳过；
+未设置时自动跳过其中 87 项依赖标准库源码的用例，其余 641 项照跑）。
 
-> 界面那侧的 157 项测试在 `stm32-init-gen-gui` 项目里（`tests/test_gui.py`），
+> 界面那侧的测试在 `gui\` 里（`gui/tests/test_gui.py`），
 > 用同一个 venv 单独跑：`cd ..\gui; python -m pytest -q`。
-> 拆开后核心的测试不再需要 Qt，装 PySide6 与否都能跑。
+> 拆成两个包后核心的测试不再需要 Qt，装 PySide6 与否都能跑。
 
 ### 三层验证，互相补充
 
@@ -937,7 +997,7 @@ python -m ruff check src tools tests
 
 ### 界面测试的 offscreen 约定
 
-界面测试（现在在 `stm32-init-gen-gui/tests/`）跑在 `QT_QPA_PLATFORM=offscreen`
+界面测试（现在在 `gui/tests/`）跑在 `QT_QPA_PLATFORM=offscreen`
 下，并把所有模态对话框替换成空实现或「用户取消」。不设平台的话 `QMessageBox`
 会进入自己的事件循环等用户点击，测试**永久挂住**而不是失败。
 
@@ -952,7 +1012,7 @@ python -m ruff check src tools tests
 - [x] 第 4 步：校验层
 - [x] 第 5 步：Jinja2 模板 + 生成器
 - [x] 第 6 步：CLI generate + 退出码契约
-- [x] 第 7 步：PySide6 GUI（**已拆出**为独立项目 `stm32-init-gen-gui`，见上）
+- [x] 第 7 步：PySide6 GUI（同仓库另一个包 `gui\`，见上）
 - [x] 第 8 步：编译验证（Keil AC5/AC6 + arm-none-eabi-gcc + 宿主 gcc 降级）
 - [x] 第 9 步：按外设拆分生成文件 + 生成 RCC/Flash 代码
       （`bsp_init` / `bsp_rcc` / `bsp_gpio` / `bsp_usart` / `bsp_nvic` / `bsp_it` / `main`，共 13 个文件；
@@ -961,3 +1021,11 @@ python -m ruff check src tools tests
       （产物 13 → **19 个**；`bsp_afio` 承接全部重映射与 SWJ 释放并排在 GPIO 之前；
       模型含芯片规格校验，校验层新增 check_afio / check_exti / check_tim；
       生成代码通过 armclang + armcc 双编译器零警告）
+- [x] 第 11 步：ADC 外设
+      （产物 19 → **21 个**；新增 `bsp_adc` 模块，调用序为
+      `rcc → afio → gpio → exti → usart → tim → **adc** → nvic`；
+      ADC1/ADC2 共享 `ADC1_2_IRQn`，多个实例合并为单个 `ADC1_2_IRQHandler`；
+      模拟输入标 `PinDirection.ANALOG` 参与独占冲突检测；
+      规则层新增 `check_adc` 共 13 条规则，其中 3 条「无数据手册可核」的
+      判断刻意只报 WARNING；核心 728 项 + 界面 179 项测试全绿，
+      生成代码在 split 与 merged 两种布局下均通过 armclang 与 armcc 零警告）

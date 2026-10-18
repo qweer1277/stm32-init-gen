@@ -52,6 +52,7 @@ from stm32gen.validate.pins import (
 )
 from stm32gen.validate.rules import (
     ALL_RULES,
+    check_adc,
     check_chip,
     check_gpio,
     check_nvic,
@@ -101,6 +102,7 @@ __all__ = [
     "PinDirection",
     "PinUsage",
     "Severity",
+    "check_adc",
     "check_chip",
     "check_gpio",
     "check_nvic",

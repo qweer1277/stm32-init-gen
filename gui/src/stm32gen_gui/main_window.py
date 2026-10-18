@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from stm32gen import __version__, default_out_dir
+from stm32gen import __version__, configured_stdlib_root, default_out_dir
 from stm32gen.generator import generate
 from stm32gen.generator.layout import DEFAULT_LAYOUT, OutputLayout
 from stm32gen.models import (
@@ -64,6 +64,13 @@ from stm32gen.models import (
 from stm32gen.models.enums import (
     EXTI_EXTERNAL_LINE_MAX,
     EXTI_EXTERNAL_LINE_MIN,
+    AdcChannel,
+    AdcDataAlign,
+    AdcInstance,
+    AdcMode,
+    AdcPrescaler,
+    AdcSampleTime,
+    AdcTrigger,
     AfioSwjRemap,
     ExtiMode,
     ExtiTrigger,
@@ -129,6 +136,19 @@ TIM_CHANNEL_COLUMNS = (
     ("备注", 120),
 )
 
+# ADC 规则组通道子表列：(标题, 宽度)
+#
+# 「通道」列要能放下「通道 17（内部参考电压 Vrefint）」，所以给到 230px
+# —— 按 ``_combo`` 的弹层撑宽逻辑虽然展开能看全，但收起时截断成
+# 「通道 17（内部…」仍然难读。
+ADC_CHANNEL_COLUMNS = (
+    ("通道", 230),
+    ("采样时间", 120),
+    ("端口", 90),
+    ("引脚", 60),
+    ("备注", 140),
+)
+
 # 预览分组。顺序即下拉顺序，**第一个是默认项**。
 #
 # 默认只看 .c 的理由：实际要读、要手改业务逻辑的是实现文件；13 个页签
@@ -154,6 +174,7 @@ CONFIG_TAB_SOURCES = (
     "bsp_exti.c",
     "bsp_usart.c",
     "bsp_tim.c",
+    "bsp_adc.c",
     "bsp_nvic.c",
 )
 
@@ -316,6 +337,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_exti_tab(), "EXTI")
         self.tabs.addTab(self._build_usart_tab(), "USART")
         self.tabs.addTab(self._build_tim_tab(), "TIM")
+        self.tabs.addTab(self._build_adc_tab(), "ADC")
         self.tabs.addTab(self._build_nvic_tab(), "NVIC")
         self.tabs.currentChanged.connect(self._on_config_tab_changed)
         splitter.addWidget(self.tabs)
@@ -674,6 +696,174 @@ class MainWindow(QMainWindow):
         channel_buttons.addWidget(remove_channel)
         channel_buttons.addStretch()
         right.addLayout(channel_buttons)
+
+        layout.addLayout(right, stretch=5)
+        return page
+
+    # ---- ADC 页 ----
+
+    def _build_adc_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QHBoxLayout(page)
+
+        # 左：实例列表
+        left = QVBoxLayout()
+        left.addWidget(QLabel("ADC 实例"))
+        self.adc_list = QListWidget()
+        self.adc_list.currentRowChanged.connect(self._on_adc_selected)
+        left.addWidget(self.adc_list)
+        list_buttons = QHBoxLayout()
+        add_button = QPushButton("添加")
+        add_button.clicked.connect(self.on_add_adc)
+        remove_button = QPushButton("删除")
+        remove_button.clicked.connect(self.on_remove_adc)
+        list_buttons.addWidget(add_button)
+        list_buttons.addWidget(remove_button)
+        left.addLayout(list_buttons)
+
+        sync_button = QPushButton("从 ADC 同步 NVIC")
+        sync_button.setToolTip(
+            "把使能了中断的 ADC 实例对应的 NVIC 通道补进 NVIC 页。"
+            "ADC1 与 ADC2 共用 ADC1_2_IRQn，只会补一条"
+        )
+        sync_button.clicked.connect(self.on_sync_adc_nvic)
+        left.addWidget(sync_button)
+        layout.addLayout(left, stretch=2)
+
+        # 右：参数表单
+        right = QVBoxLayout()
+
+        base_form = QFormLayout()
+        # 保留引用：QFormLayout 的 setVisible 不会隐藏行标签，
+        # _refresh_adc_widgets 需要用 labelForField 一起隐藏。
+        self.adc_base_form = base_form
+
+        self.adc_instance_combo = _combo(bridge.adc_instance_options(), "ADC1")
+        self.adc_instance_combo.currentIndexChanged.connect(self._on_adc_edited)
+        base_form.addRow("实例", self.adc_instance_combo)
+
+        self.adc_mode_combo = _combo(
+            bridge.adc_mode_options(), AdcMode.INDEPENDENT.value
+        )
+        self.adc_mode_combo.currentIndexChanged.connect(self._on_adc_edited)
+        base_form.addRow("工作模式", self.adc_mode_combo)
+
+        # ADCCLK 分频是**全局一份**（CFGR.ADCPRE），两个实例共用。
+        # 校验层的 adc.prescaler_conflict 会拦住两个实例填不同值的配置。
+        self.adc_prescaler_combo = _combo(
+            bridge.adc_prescaler_options(), AdcPrescaler.DIV6.value
+        )
+        self.adc_prescaler_combo.setToolTip(
+            "ADCCLK 由 PCLK2 分频而来，上限 14MHz。\n"
+            "库的 IS_RCC_ADCCLK 只检查取值合法、不检查频率，超频不报错，"
+            "表现为精度下降与通道间串扰。\n"
+            "**这个分频是全芯片一份**，ADC1 与 ADC2 共用，两个实例必须填同一个值"
+        )
+        self.adc_prescaler_combo.currentIndexChanged.connect(self._on_adc_edited)
+        base_form.addRow("ADCCLK 分频", self.adc_prescaler_combo)
+
+        self.adc_trigger_combo = _combo(
+            bridge.adc_trigger_options(), AdcTrigger.SOFTWARE.value
+        )
+        self.adc_trigger_combo.setToolTip(
+            "规则组触发源。软件触发在库里叫 ADC_ExternalTrigConv_None，"
+            "名字有误导性：它表示由 ADC_SoftwareStartConvCmd 启动"
+        )
+        self.adc_trigger_combo.currentIndexChanged.connect(self._on_adc_edited)
+        base_form.addRow("触发源", self.adc_trigger_combo)
+
+        self.adc_align_combo = _combo(
+            bridge.adc_data_align_options(), AdcDataAlign.RIGHT.value
+        )
+        self.adc_align_combo.currentIndexChanged.connect(self._on_adc_edited)
+        base_form.addRow("数据对齐", self.adc_align_combo)
+
+        self.adc_continuous_box = QCheckBox("连续转换（一次启动后不停转换）")
+        self.adc_continuous_box.stateChanged.connect(self._on_adc_edited)
+        base_form.addRow("连续转换", self.adc_continuous_box)
+
+        # 扫描模式由通道数自动决定（多通道必须扫描），但保留手动勾选，
+        # 因为单通道也可以开扫描（等价但语义明确）。
+        self.adc_scan_box = QCheckBox("扫描模式（多通道）")
+        self.adc_scan_box.setToolTip("配了多条通道时必须开启，否则只转换序列第一条")
+        self.adc_scan_box.stateChanged.connect(self._on_adc_edited)
+        base_form.addRow("扫描模式", self.adc_scan_box)
+
+        self.adc_calibration_box = QCheckBox("生成校准流程（RSTCAL → CAL）")
+        self.adc_calibration_box.setToolTip(
+            "不校准时零点漂移可达几十个 LSB，是对精度最廉价的改善。默认开启"
+        )
+        self.adc_calibration_box.stateChanged.connect(self._on_adc_edited)
+        base_form.addRow("校准", self.adc_calibration_box)
+
+        self.adc_label_edit = QLineEdit()
+        self.adc_label_edit.editingFinished.connect(self._on_adc_edited)
+        base_form.addRow("备注", self.adc_label_edit)
+        right.addLayout(base_form)
+
+        # 模拟看门狗。整组在未勾选时隐藏 —— 摆一堆不生效的输入框会让人
+        # 以为配上了，模型层也会拒绝「没开看门狗却填了阈值」的组合。
+        self.adc_watchdog_box = QCheckBox("启用模拟看门狗（越界触发 AWD）")
+        self.adc_watchdog_box.stateChanged.connect(self._on_adc_watchdog_changed)
+        right.addWidget(self.adc_watchdog_box)
+
+        watchdog_form = QFormLayout()
+        self.adc_watchdog_form = watchdog_form
+        self.adc_watchdog_channel_combo = _combo(
+            [("", "（取序列第一条）")] + bridge.adc_channel_options(), ""
+        )
+        self.adc_watchdog_channel_combo.currentIndexChanged.connect(self._on_adc_edited)
+        watchdog_form.addRow("监控通道", self.adc_watchdog_channel_combo)
+
+        self.adc_watchdog_high_edit = QLineEdit("4095")
+        self.adc_watchdog_high_edit.editingFinished.connect(self._on_adc_edited)
+        watchdog_form.addRow("上限", self.adc_watchdog_high_edit)
+
+        self.adc_watchdog_low_edit = QLineEdit("0")
+        self.adc_watchdog_low_edit.editingFinished.connect(self._on_adc_edited)
+        watchdog_form.addRow("下限", self.adc_watchdog_low_edit)
+        right.addLayout(watchdog_form)
+
+        right.addWidget(QLabel("中断"))
+        self.adc_interrupt_boxes: dict[str, QCheckBox] = {}
+        interrupt_grid = QGridLayout()
+        for index, (value, label) in enumerate(bridge.adc_interrupt_options()):
+            box = QCheckBox(label)
+            box.stateChanged.connect(self._on_adc_edited)
+            self.adc_interrupt_boxes[value] = box
+            interrupt_grid.addWidget(box, index // 2, index % 2)
+        right.addLayout(interrupt_grid)
+
+        right.addWidget(QLabel("规则组通道（顺序即 rank）"))
+        self.adc_channel_table = QTableWidget(0, len(ADC_CHANNEL_COLUMNS))
+        self.adc_channel_table.setHorizontalHeaderLabels(
+            [t for t, _ in ADC_CHANNEL_COLUMNS]
+        )
+        for index, (_, width) in enumerate(ADC_CHANNEL_COLUMNS):
+            self.adc_channel_table.setColumnWidth(index, width)
+        self.adc_channel_table.verticalHeader().setVisible(False)
+        right.addWidget(self.adc_channel_table)
+
+        channel_buttons = QHBoxLayout()
+        add_channel = QPushButton("添加通道")
+        add_channel.clicked.connect(self.on_add_adc_channel)
+        remove_channel = QPushButton("删除通道")
+        remove_channel.clicked.connect(self.on_remove_adc_channel)
+        channel_buttons.addWidget(add_channel)
+        channel_buttons.addWidget(remove_channel)
+        channel_buttons.addStretch()
+        right.addLayout(channel_buttons)
+
+        note = QLabel(
+            "模拟输入引脚必须配成 GPIO_Mode_AIN（生成在 bsp_gpio.c 里）。\n"
+            "配成任何数字输入模式都会让施密特触发器介入，读数被钳位 —— "
+            "现象是「永远是 0 或 4095」。\n"
+            "通道 16/17 是内部温度传感器与 Vrefint，不占引脚。\n"
+            "ADC1 与 ADC2 共用 ADC1_2_IRQn，生成时只会有一个中断服务函数。"
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #666;")
+        right.addWidget(note)
 
         layout.addLayout(right, stretch=5)
         return page
@@ -1566,6 +1756,293 @@ class MainWindow(QMainWindow):
             external_clock_hz=self.tim_external_clock_edit.text(),
         )
 
+    # ---- ADC 事件处理 ----
+
+    def on_add_adc(self) -> None:
+        """添加一个 ADC 实例，默认选还没配置过的那个。"""
+        used = {
+            self.adc_list.item(row).data(Qt.ItemDataRole.UserRole).instance
+            for row in range(self.adc_list.count())
+            if self.adc_list.item(row).data(Qt.ItemDataRole.UserRole) is not None
+        }
+        free = [item for item in AdcInstance if item.value not in used] or list(
+            AdcInstance
+        )
+        form = bridge.AdcForm(instance=free[0].value)
+        # 默认给一条通道 —— 空序列在模型层会被拒绝，GUI 不该造出必然报错的初始状态
+        form.channels = [bridge.AdcChannelRow()]
+
+        item = QListWidgetItem(self._adc_display(form))
+        item.setData(Qt.ItemDataRole.UserRole, form)
+        self.adc_list.addItem(item)
+        self.adc_list.setCurrentRow(self.adc_list.count() - 1)
+        self.refresh_preview()
+
+    def on_remove_adc(self) -> None:
+        row = self.adc_list.currentRow()
+        if row >= 0:
+            self.adc_list.takeItem(row)
+            self.refresh_preview()
+
+    @staticmethod
+    def _adc_display(form: bridge.AdcForm) -> str:
+        """实例列表里的一行文本。"""
+        text = f"{form.instance}  {len(form.channels)} 通道"
+        if form.is_dual_mode:
+            text += "  [双 ADC 模式]"
+        if form.watchdog:
+            text += f"  [看门狗 {form.watchdog_low}~{form.watchdog_high}]"
+        if form.interrupts:
+            text += f"  [{len(form.interrupts)} 中断]"
+        if form.label:
+            text += f"  {form.label}"
+        return text
+
+    def _on_adc_channel_channel_changed(self) -> None:
+        """通道下拉改动：内部通道要禁掉端口/引脚两格。"""
+        self._refresh_adc_channel_pins()
+        self._on_adc_edited()
+
+    def _refresh_adc_channel_pins(self) -> None:
+        """内部通道（16/17）不占引脚，把端口/引脚两格禁掉并清空。
+
+        禁而不是隐藏：表格里一行的两格消失会让列宽跳动，
+        而且用户改回外部通道时要能立刻填。
+        """
+        for row in range(self.adc_channel_table.rowCount()):
+            combo = self.adc_channel_table.cellWidget(row, 0)
+            if combo is None:
+                continue
+            try:
+                internal = AdcChannel(combo.currentData()).is_internal
+            except ValueError:
+                internal = False
+
+            port_widget = self.adc_channel_table.cellWidget(row, 2)
+            pin_item = self.adc_channel_table.item(row, 3)
+            if port_widget is not None:
+                port_widget.setEnabled(not internal)
+                if internal:
+                    index = port_widget.findData("")
+                    if index >= 0:
+                        port_widget.setCurrentIndex(index)
+            if pin_item is not None:
+                pin_item.setFlags(
+                    pin_item.flags() & ~Qt.ItemFlag.ItemIsEnabled
+                    if internal
+                    else pin_item.flags() | Qt.ItemFlag.ItemIsEnabled
+                )
+                if internal:
+                    pin_item.setText("")
+
+    def on_add_adc_channel(self) -> None:
+        """给当前 ADC 实例添加一条规则通道。"""
+        row = self.adc_channel_table.rowCount()
+        self.adc_channel_table.insertRow(row)
+
+        # 默认选还没用过的通道（同一通道在序列里重复会被模型层拒绝）
+        used = {
+            self.adc_channel_table.cellWidget(r, 0).currentData()
+            for r in range(row)
+            if self.adc_channel_table.cellWidget(r, 0) is not None
+        }
+        free = [
+            item
+            for item in AdcChannel
+            # 内部通道默认不选：它们不占引脚，用户通常是主动要用的
+            if item.value not in used and not item.is_internal
+        ] or list(AdcChannel)
+
+        combo = _combo(bridge.adc_channel_options(), free[0].value)
+        combo.currentIndexChanged.connect(self._on_adc_channel_channel_changed)
+        self.adc_channel_table.setCellWidget(row, 0, combo)
+        self.adc_channel_table.setCellWidget(
+            row, 1, _combo(bridge.adc_sample_time_options(), AdcSampleTime.CYCLES_55_5.value)
+        )
+        # 端口/引脚留空 = 不生成 GPIO 配置（引脚由用户在别处配）
+        self.adc_channel_table.setCellWidget(
+            row, 2, _combo([("", "（不配）")] + self._port_options(), "")
+        )
+        self.adc_channel_table.setItem(row, 3, QTableWidgetItem(""))
+        self.adc_channel_table.setItem(row, 4, QTableWidgetItem(""))
+
+        sample_combo = self.adc_channel_table.cellWidget(row, 1)
+        if sample_combo is not None:
+            sample_combo.currentIndexChanged.connect(self._on_adc_edited)
+        self._refresh_adc_channel_pins()
+        self.refresh_preview()
+
+    def on_remove_adc_channel(self) -> None:
+        row = self.adc_channel_table.currentRow()
+        if row >= 0:
+            self.adc_channel_table.removeRow(row)
+            self.refresh_preview()
+
+    def _on_adc_selected(self, row: int) -> None:
+        """切换到某个 ADC 实例：把它的参数填进表单。"""
+        if row < 0:
+            return
+        item = self.adc_list.item(row)
+        if item is None:
+            return
+        form = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(form, bridge.AdcForm):
+            self._fill_adc_form(form)
+
+    def _fill_adc_form(self, form: bridge.AdcForm) -> None:
+        """把表单值填进控件。"""
+        self._set_combo(self.adc_instance_combo, form.instance)
+        self._set_combo(self.adc_mode_combo, form.mode)
+        self._set_combo(self.adc_prescaler_combo, form.prescaler)
+        self._set_combo(self.adc_trigger_combo, form.trigger)
+        self._set_combo(self.adc_align_combo, form.data_align)
+        self.adc_continuous_box.setChecked(form.continuous)
+        self.adc_scan_box.setChecked(form.scan_mode)
+        self.adc_calibration_box.setChecked(form.calibration)
+        self.adc_label_edit.setText(form.label)
+        self.adc_watchdog_box.setChecked(form.watchdog)
+        self._set_combo(self.adc_watchdog_channel_combo, form.watchdog_channel)
+        self.adc_watchdog_high_edit.setText(form.watchdog_high)
+        self.adc_watchdog_low_edit.setText(form.watchdog_low)
+
+        for value, box in self.adc_interrupt_boxes.items():
+            box.setChecked(value in form.interrupts)
+
+        self.adc_channel_table.setRowCount(0)
+        for channel in form.channels:
+            self.on_add_adc_channel()
+            row = self.adc_channel_table.rowCount() - 1
+            self._set_combo(self.adc_channel_table.cellWidget(row, 0), channel.channel)
+            self._set_combo(self.adc_channel_table.cellWidget(row, 1), channel.sample_time)
+            self._set_combo(self.adc_channel_table.cellWidget(row, 2), channel.port)
+            item = self.adc_channel_table.item(row, 3)
+            if item is not None:
+                item.setText(channel.pin)
+            item = self.adc_channel_table.item(row, 4)
+            if item is not None:
+                item.setText(channel.label)
+
+        self._refresh_adc_channel_pins()
+        self._refresh_adc_widgets()
+
+    def _on_adc_watchdog_changed(self) -> None:
+        self._refresh_adc_widgets()
+        self._on_adc_edited()
+
+    def _refresh_adc_widgets(self) -> None:
+        """按当前选项显隐/启停从属控件。
+
+        条件字段用 setVisible 隐藏时**必须连 QFormLayout 的标签一起隐藏**，
+        否则会留一行空标签，看起来像界面坏了。
+        """
+        watchdog = self.adc_watchdog_box.isChecked()
+        for widget in (
+            self.adc_watchdog_channel_combo,
+            self.adc_watchdog_high_edit,
+            self.adc_watchdog_low_edit,
+        ):
+            widget.setVisible(watchdog)
+            widget.setEnabled(watchdog)
+            label = self.adc_watchdog_form.labelForField(widget)
+            if label is not None:
+                label.setVisible(watchdog)
+                label.setEnabled(watchdog)
+
+    def _on_adc_edited(self) -> None:
+        """ADC 表单改动：写回当前列表项并刷新预览。"""
+        row = self.adc_list.currentRow()
+        if row >= 0:
+            item = self.adc_list.item(row)
+            if item is not None:
+                form = self._read_adc_form()
+                item.setData(Qt.ItemDataRole.UserRole, form)
+                item.setText(self._adc_display(form))
+        self.refresh_preview()
+
+    def _read_adc_form(self) -> bridge.AdcForm:
+        """从控件读出当前 ADC 表单值。"""
+        channels: list[bridge.AdcChannelRow] = []
+        for row in range(self.adc_channel_table.rowCount()):
+            def text_at(column: int, _row: int = row) -> str:
+                cell = self.adc_channel_table.item(_row, column)
+                return cell.text() if cell else ""
+
+            def data_at(column: int, _row: int = row) -> str:
+                widget = self.adc_channel_table.cellWidget(_row, column)
+                return widget.currentData() if widget is not None else ""
+
+            channels.append(
+                bridge.AdcChannelRow(
+                    channel=data_at(0),
+                    sample_time=data_at(1),
+                    port=data_at(2),
+                    pin=text_at(3),
+                    label=text_at(4),
+                )
+            )
+
+        interrupts = [
+            value for value, box in self.adc_interrupt_boxes.items() if box.isChecked()
+        ]
+
+        return bridge.AdcForm(
+            instance=self.adc_instance_combo.currentData(),
+            mode=self.adc_mode_combo.currentData(),
+            prescaler=self.adc_prescaler_combo.currentData(),
+            scan_mode=self.adc_scan_box.isChecked(),
+            continuous=self.adc_continuous_box.isChecked(),
+            trigger=self.adc_trigger_combo.currentData(),
+            data_align=self.adc_align_combo.currentData(),
+            interrupts=interrupts,
+            watchdog=self.adc_watchdog_box.isChecked(),
+            watchdog_channel=self.adc_watchdog_channel_combo.currentData() or "",
+            watchdog_high=self.adc_watchdog_high_edit.text(),
+            watchdog_low=self.adc_watchdog_low_edit.text(),
+            calibration=self.adc_calibration_box.isChecked(),
+            label=self.adc_label_edit.text(),
+            channels=channels,
+        )
+
+    def on_sync_adc_nvic(self) -> None:
+        """按 ADC 的中断配置自动补齐 NVIC 通道。
+
+        ADC1 与 ADC2 共用 ``ADC1_2_IRQn``，所以两者都使能中断时也只会补
+        一条通道 —— 这正是硬件的样子，不该造出两条同名通道
+        （``nvic.duplicate_channel`` 会报错）。
+        """
+        try:
+            config = self._form_to_config()
+        except Exception:
+            self.status_label.setText("配置有误，无法同步")
+            return
+
+        existing = {
+            self.nvic_table.cellWidget(row, 0).currentData()
+            for row in range(self.nvic_table.rowCount())
+            if self.nvic_table.cellWidget(row, 0) is not None
+        }
+
+        added = 0
+        for adc in config.adc:
+            if not adc.interrupts:
+                continue
+            if adc.irqn in existing:
+                continue
+            row = self.nvic_table.rowCount()
+            self.nvic_table.insertRow(row)
+            self.nvic_table.setCellWidget(row, 0, _combo(self._irq_options(), adc.irqn))
+            self.nvic_table.setItem(row, 1, QTableWidgetItem("0"))
+            self.nvic_table.setItem(row, 2, QTableWidgetItem("0"))
+            self.nvic_table.setItem(row, 3, QTableWidgetItem("1"))
+            self.nvic_table.setItem(row, 4, QTableWidgetItem(adc.name))
+            existing.add(adc.irqn)
+            added += 1
+
+        self.status_label.setText(
+            f"已从 ADC 补齐 {added} 条 NVIC 通道" if added else "NVIC 通道已齐全"
+        )
+        self.refresh_preview()
+
     def on_sync_nvic(self) -> None:
         """按 USART 的中断配置自动补齐 NVIC 通道。"""
         try:
@@ -1609,15 +2086,20 @@ class MainWindow(QMainWindow):
     def _irq_options(self) -> list[tuple[str, str]]:
         """中断号下拉选项：从标准库 IRQn_Type 里取真实存在的中断号。
 
-        只列本工具能生成配置的外设 —— USART、EXTI、TIM。范围靠前缀过滤而不是
-        手写清单，这样标准库枚举里新出现的名字自动可见，也不会编造出不存在的
-        IRQn（比如 ``TIM5_IRQn`` 在中容量型号上就没有）。
+        只列本工具能生成配置的外设 —— USART、EXTI、TIM、ADC。范围靠前缀过滤
+        而不是手写清单，这样标准库枚举里新出现的名字自动可见，也不会编造出
+        不存在的 IRQn（比如 ``TIM5_IRQn`` 在中容量型号上就没有）。
+
+        **ADC 的前缀不能漏**：``ADC1_2_IRQn`` 是 ADC1/ADC2 共用的那个向量。
+        漏了它，同步 ADC 的 NVIC 通道时 ``findData`` 找不到该项，
+        ``_combo`` 会停在首项 —— 于是 ADC 的中断号被静默写成
+        ``EXTI0_IRQn``，生成代码能编译但中断永远进不来。
         """
         index = default_index()
         names = index.enum_values("IRQn_Type")
         # TIM1 是高级定时器，更新事件走 TIM1_UP_IRQn，另有 BRK/TRG_COM/CC 三个
         # 独立向量。全部列出，用户要接哪个就选哪个。
-        prefixes = ("USART", "EXTI", "TIM")
+        prefixes = ("USART", "EXTI", "TIM", "ADC")
         return [(name, name) for name in names if name.startswith(prefixes)]
 
     # ------------------------------------------------------------------
@@ -1840,6 +2322,15 @@ class MainWindow(QMainWindow):
                 if form is not None:
                     tim_forms.append(form)
 
+        # ADC 列表
+        adc_forms: list[bridge.AdcForm] = []
+        for row in range(self.adc_list.count()):
+            item = self.adc_list.item(row)
+            if item is not None:
+                form = item.data(Qt.ItemDataRole.UserRole)
+                if form is not None:
+                    adc_forms.append(form)
+
         return bridge.ConfigForm(
             chip=self.chip_combo.currentData(),
             hse_hz=self.hse_edit.text(),
@@ -1851,6 +2342,7 @@ class MainWindow(QMainWindow):
             afio=bridge.AfioForm(swj_remap=self.afio_swj_combo.currentData()),
             exti_rows=exti_rows,
             tim_forms=tim_forms,
+            adc_forms=adc_forms,
         )
 
     def _form_to_config(self) -> Stm32Config:
@@ -1936,6 +2428,18 @@ class MainWindow(QMainWindow):
         else:
             # 没有实例时清空右侧表单，避免残留上一次的显示值
             self._fill_tim_form(bridge.TimForm())
+
+        # ADC 列表
+        self.adc_list.clear()
+        for adc_form in form.adc_forms:
+            item = QListWidgetItem(self._adc_display(adc_form))
+            item.setData(Qt.ItemDataRole.UserRole, adc_form)
+            self.adc_list.addItem(item)
+        if self.adc_list.count():
+            self.adc_list.setCurrentRow(0)
+        else:
+            # 没有实例时清空右侧表单，避免残留上一次的显示值
+            self._fill_adc_form(bridge.AdcForm())
 
     # ------------------------------------------------------------------
     # 预览与校验
@@ -2293,6 +2797,23 @@ class MainWindow(QMainWindow):
                 "未找到任何编译器，无法做编译验证。\n\n"
                 "装 arm-none-eabi-gcc 可做真实目标编译；\n"
                 "或设置环境变量 HOST_CC 指定宿主编译器做语法检查。",
+            )
+            return
+
+        # 标准库没配时必须提前拦下。否则编译器会因为找不到 stm32f10x.h
+        # 报出一串「标识符未定义」，用户看到的是「编译失败」—— 那是把环境
+        # 问题说成了代码问题，方向就错了。宿主 gcc 降级不做这个检查：
+        # 它只做语法检查，本来就不需要标准库头文件。
+        if toolchain.kind.is_native and configured_stdlib_root() is None:
+            QMessageBox.information(
+                self,
+                "编译验证不可用",
+                "未设置标准库代码根目录，无法做真实目标编译。\n\n"
+                "请设置环境变量 STM32_STDLIB_ROOT 指向 STM32F10x 标准外设库\n"
+                "根目录（其中应包含 Start/ 与 Library/ 两个子目录），例如：\n\n"
+                r"    $env:STM32_STDLIB_ROOT = 'D:\path\to\STM32F10x_StdPeriph_Lib'"
+                "\n\n"
+                "该目录只用于编译验证，生成代码本身不需要它。",
             )
             return
 

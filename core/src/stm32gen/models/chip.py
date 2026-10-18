@@ -37,8 +37,11 @@ class ChipSpec:
     package: str
     ports: Mapping[str, frozenset[int]]
     usart_instances: tuple[str, ...]
-    pclk1_hz: int
-    pclk2_hz: int
+    #: 本芯片上真实存在的 ADC 实例。中容量只有 ADC1/ADC2 ——
+    #: ``ADC3_BASE`` 定义在 ``stm32f10x.h`` 的 ``#ifdef STM32F10X_HD`` 分支里。
+    adc_instances: tuple[str, ...] = ()
+    pclk1_hz: int = 36_000_000
+    pclk2_hz: int = 72_000_000
     hse_range_hz: tuple[int, int] = (1_000_000, 25_000_000)
     # 端口字母 -> 引脚号 -> 占用原因
     reserved: Mapping[str, Mapping[int, str]] = field(default_factory=dict)
@@ -53,6 +56,10 @@ class ChipSpec:
 
     def has_pin(self, letter: str, number: int) -> bool:
         return number in self.ports.get(letter, frozenset())
+
+    def has_adc(self, instance_value: str) -> bool:
+        """该 ADC 实例在本芯片上是否存在。"""
+        return instance_value in self.adc_instances
 
     def available_pins(self) -> list[tuple[str, int]]:
         """列出全部可用引脚，按端口、引脚号排序。"""
@@ -111,6 +118,8 @@ _LQFP48_NOTES: tuple[str, ...] = (
     "PA13/PA14 默认是 SWDIO/SWCLK 调试口，配成普通 GPIO 会导致无法再次下载程序；"
     "确需使用请先调用 GPIO_PinRemapConfig(GPIO_Remap_SWJ_JTAGDisable, ENABLE)",
     "PA9/PA10 是 USART1 默认引脚，PA2/PA3 是 USART2 默认引脚，PB10/PB11 是 USART3 默认引脚",
+    "ADC1/ADC2 共用 16 个外部通道（ADC12_IN0~IN15），通道 16/17 是内部"
+    "温度传感器与 Vrefint，不占引脚；ADC3 在中容量上不存在",
 )
 
 # 中容量（Medium-density）：64~128KB Flash 用 STM32F10X_MD。
@@ -126,6 +135,7 @@ CHIPS: Mapping[ChipId, ChipSpec] = MappingProxyType(
             package="LQFP48",
             ports=_LQFP48_PORTS,
             usart_instances=("USART1", "USART2", "USART3"),
+            adc_instances=("ADC1", "ADC2"),
             pclk1_hz=36_000_000,
             pclk2_hz=72_000_000,
             reserved=_LQFP48_RESERVED,
@@ -139,6 +149,7 @@ CHIPS: Mapping[ChipId, ChipSpec] = MappingProxyType(
             package="LQFP48",
             ports=_LQFP48_PORTS,
             usart_instances=("USART1", "USART2", "USART3"),
+            adc_instances=("ADC1", "ADC2"),
             pclk1_hz=36_000_000,
             pclk2_hz=72_000_000,
             reserved=_LQFP48_RESERVED,

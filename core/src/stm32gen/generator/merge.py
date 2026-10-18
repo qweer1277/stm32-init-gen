@@ -14,7 +14,7 @@
 
 因此这里选择后者：``split`` 的输出**一行都不经过本模块**，它的逐字节稳定性
 由结构保证，不需要靠「改完再比对」来验证。合并只是一层纯函数据变换，
-输入是 19 个文件的文本，输出是 3 个文件的文本。
+输入是 21 个文件的文本，输出是 3 个文件的文本。
 
 合并丢掉的东西
 --------------
@@ -31,7 +31,7 @@ from __future__ import annotations
 from stm32gen.generator.types import GeneratedFile
 
 # 合并顺序。必须与 bsp_init() 的调用序列一致：
-# 时钟 → 重映射 → GPIO → EXTI → USART → TIM → NVIC → 中断服务函数。
+# 时钟 → 重映射 → GPIO → EXTI → USART → TIM → ADC → NVIC → 中断服务函数。
 # bsp_init.c 排在最前，因为它是编排入口，读代码时先看到「按什么顺序做什么」。
 SOURCE_ORDER: tuple[str, ...] = (
     "bsp_init.c",
@@ -41,6 +41,7 @@ SOURCE_ORDER: tuple[str, ...] = (
     "bsp_exti.c",
     "bsp_usart.c",
     "bsp_tim.c",
+    "bsp_adc.c",
     "bsp_nvic.c",
     "bsp_it.c",
 )
@@ -53,6 +54,7 @@ HEADER_ORDER: tuple[str, ...] = (
     "bsp_exti.h",
     "bsp_usart.h",
     "bsp_tim.h",
+    "bsp_adc.h",
     "bsp_nvic.h",
     "bsp_it.h",
 )
@@ -210,7 +212,7 @@ def _banner(title: str, note: str, extra: tuple[str, ...] = ()) -> list[str]:
 
 
 def merge_split(files: list[GeneratedFile]) -> list[GeneratedFile]:
-    """把 split 布局的 19 个产物合并成 3 个。
+    """把 split 布局的 21 个产物合并成 3 个。
 
     输入必须是 ``generate()`` 在 split 布局下的原始产物；本函数不写盘。
     """
@@ -233,7 +235,7 @@ def merge_split(files: list[GeneratedFile]) -> list[GeneratedFile]:
             "合并后的外设声明（由按外设拆分的各头文件合并而成）。",
             extra=(
                 "本文件把 bsp_init / bsp_rcc / bsp_afio / bsp_gpio / bsp_exti /",
-                "bsp_usart / bsp_tim / bsp_nvic / bsp_it 的声明合在一起。",
+                "bsp_usart / bsp_tim / bsp_adc / bsp_nvic / bsp_it 的声明合在一起。",
                 "各段注释里提到的 bsp_xxx.c / bsp_xxx.h 指的是同一套模板的",
                 "分文件产物；在本布局下，对应的就是 bsp.c / 本文件里的同名声明的段。",
             ),
@@ -265,7 +267,7 @@ def merge_split(files: list[GeneratedFile]) -> list[GeneratedFile]:
             "合并后的外设初始化实现（由按外设拆分的各源文件合并而成）。",
             extra=(
                 "段顺序与 bsp_init() 的调用序列一致：",
-                "时钟 → 重映射 → GPIO → EXTI → USART → TIM → NVIC → 中断服务函数。",
+                "时钟 → 重映射 → GPIO → EXTI → USART → TIM → ADC → NVIC → 中断服务函数。",
             ),
         ),
         f'#include "{MERGED_HEADER}"',

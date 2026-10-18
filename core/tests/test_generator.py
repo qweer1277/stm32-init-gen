@@ -65,6 +65,8 @@ ALL_GENERATED_FILES = (
     "bsp_usart.c",
     "bsp_tim.h",
     "bsp_tim.c",
+    "bsp_adc.h",
+    "bsp_adc.c",
     "bsp_nvic.h",
     "bsp_nvic.c",
     "bsp_it.h",
@@ -90,7 +92,7 @@ def test_templates_dir_exists() -> None:
 
 
 def test_generate_produces_all_files(demo_result) -> None:
-    """13 个产物一个都不能少（按外设分文件）。"""
+    """全部产物一个都不能少（按外设分文件）。"""
     names = {item.name for item in demo_result.files}
     assert names == set(ALL_GENERATED_FILES)
 
@@ -101,7 +103,7 @@ EXPECTED_FILE_COUNT = len(ALL_GENERATED_FILES)
 def test_output_specs_are_per_peripheral() -> None:
     """按外设拆分：每个外设一个 .h/.c 对，加上聚合入口、中断骨架与 main。"""
     names = [output for _, output, _ in OUTPUT_SPECS]
-    for peripheral in ("rcc", "gpio", "usart", "nvic"):
+    for peripheral in ("rcc", "gpio", "usart", "adc", "nvic"):
         assert f"bsp_{peripheral}.h" in names
         assert f"bsp_{peripheral}.c" in names
     # 聚合入口不再包含外设实现细节，只做顺序编排
@@ -1104,7 +1106,7 @@ def test_all_generated_files_have_matching_parens(demo_result) -> None:
 
 
 # --------------------------------------------------------------------------
-# 合并布局：19 个文件 → bsp.h / bsp.c / main.c
+# 合并布局：21 个文件 → bsp.h / bsp.c / main.c
 # --------------------------------------------------------------------------
 
 
@@ -1119,7 +1121,7 @@ def test_merged_layout_produces_three_files(merged_result) -> None:
 
 
 def test_split_layout_is_untouched_by_merge(merged_result) -> None:
-    """默认布局仍是 19 个文件的分文件布局。"""
+    """默认布局仍是按外设分文件的布局（21 个）。"""
     split = generate(make_demo_config())
     assert len(split.files) == EXPECTED_FILE_COUNT
     assert len(merged_result.files) == 3

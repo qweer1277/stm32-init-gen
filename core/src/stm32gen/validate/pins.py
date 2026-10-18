@@ -1,9 +1,9 @@
 """引脚占用分析。
 
 把「谁用了哪个引脚」集中算清楚，供冲突检测与提示共用。
-关键点：USART / EXTI / TIM 的引脚是**隐式**占用的 —— 用户只在表单里填了
-「用 USART1」「EXTI0 接 PB0」「TIM3_CH1 输出」，但 PA9/PA10、PB0、PA6
-就实际被占用了。不把它们显式建模出来，就会出现
+关键点：USART / EXTI / TIM / ADC 的引脚是**隐式**占用的 —— 用户只在表单里填了
+「用 USART1」「EXTI0 接 PB0」「TIM3_CH1 输出」「ADC1 采通道 3」，但
+PA9/PA10、PB0、PA6、PA3 就实际被占用了。不把它们显式建模出来，就会出现
 「USART1 和 GPIO PA9 同时配置」这种冲突漏检。
 
 每加一种"会隐式占用引脚"的外设，都必须在这里登记 ——
@@ -213,6 +213,31 @@ def collect_pin_usages(config: Stm32Config) -> list[PinUsage]:
                     role=f"PWM {channel.mode.name}"
                     + (f" {channel.label}" if channel.label else ""),
                     direction=PinDirection.OUTPUT,
+                )
+            )
+
+    # ADC：模拟输入，方向标 ANALOG 而不是 INPUT。
+    #
+    # **这个区分是必须的**：GPIO_Mode_AIN 会把引脚的施密特触发器与
+    # 上/下拉一起关掉（CNF=00），此后任何数字外设都读不到该引脚的电平。
+    # 若标成 INPUT，`classify_conflict` 会认为「多个输入共用引脚合法」而不报，
+    # 用户就会得到一份"ADC 读数永远是 0、串口也收不到数据"的配置。
+    #
+    # 内部通道（16 = 温度传感器，17 = Vrefint）不接引脚，`needs_gpio`
+    # 恒为假，天然被排除 —— 不需要额外的 if。
+    for index, adc in enumerate(config.adc):
+        for channel in adc.channels:
+            if not channel.needs_gpio or channel.port is None:
+                continue
+            usages.append(
+                PinUsage(
+                    letter=channel.port.letter,
+                    number=channel.pin,
+                    owner=f"{adc.name} {channel.channel.name} 模拟输入",
+                    location=f"adc[{index}]",
+                    role="AIN " + channel.channel.label
+                    + (f" {channel.label}" if channel.label else ""),
+                    direction=PinDirection.ANALOG,
                 )
             )
 
