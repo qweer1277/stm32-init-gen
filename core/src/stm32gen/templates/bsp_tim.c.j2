@@ -1,0 +1,106 @@
+/**
+  ******************************************************************************
+  * @file    bsp_tim.c
+  * @brief   {{ ctx.chip }} 定时器（TIM）配置。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * PWM 输出引脚的 GPIO_Init 在 bsp_gpio.c 里（复用推挽输出），
+  * 引脚重映射在 bsp_afio.c 里（必须早于 GPIO_Init）。
+  ******************************************************************************
+  */
+
+#include "bsp_tim.h"
+
+/**
+  * @brief  初始化全部已配置的定时器。
+  * @note   每个实例的顺序：**时钟 → 时基 → 输出比较 → 预装载 → 主输出
+  *         → 中断使能 → TIM_Cmd**。几处关键点：
+  *
+  *         1. **PSC 与 ARR 都是 16 位**，写入超过 0xFFFF 会被截断。
+  *         2. **CKD 不影响计数频率** —— 它只改数字滤波器与死区的时间基准
+  *            tDTS。想"让定时器慢一点"要改 PSC，不是 CKD。
+  *         3. **高级定时器（TIM1）必须开主输出 MOE**，否则 PWM 引脚没有
+  *            波形 —— 这是 TIM1 最常见的"配了没输出"原因，见下面的
+  *            TIM_CtrlPWMOutputs 调用。
+  * @param  None
+  * @retval None
+  */
+void bsp_tim_init(void)
+{
+{% if ctx.tim_clocks %}
+{% for clock in ctx.tim_clocks %}
+    /* {{ clock.comment }} */
+    {{ clock.c_line }}
+{% endfor %}
+
+{% endif %}
+{% for timer in ctx.tim_configs %}
+    /* ── {{ timer.instance }}{% if timer.label %} — {{ timer.label }}{% endif %} ─────────────────────────────────────
+       {{ timer.frequency_note }}
+       {% if not timer.external_clock %}定时器时钟不是 PCLK：APB 分频系数 != 1 时它是 PCLK 的 2 倍。{% endif %} */
+    {
+{% if timer.has_clock_config %}
+        /* 时钟源必须在时基之前切过去：默认是内部时钟，这句把它改成外部引脚
+           （或级联的另一个定时器）。之后 PSC 才是对"外部脉冲"做分频。 */
+        {{ timer.clock_source }}({{ timer.instance }}, {{ timer.clock_argument }});
+
+{% endif %}
+        /* 变量名用 ST 例程的惯例名（TIM_TimeBaseStructure），便于与官方例程对照。 */
+        TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
+        TIM_TimeBaseStructure.TIM_Prescaler         = {{ timer.prescaler }};
+        TIM_TimeBaseStructure.TIM_Period            = {{ timer.period }};
+        TIM_TimeBaseStructure.TIM_CounterMode       = {{ timer.counter_mode }};
+        TIM_TimeBaseStructure.TIM_ClockDivision     = {{ timer.clock_division }};
+        /* 重复计数器只有高级定时器（TIM1/TIM8）有 RCR 寄存器；
+           通用定时器上该字段被库忽略（写 0 即可）。 */
+        TIM_TimeBaseStructure.TIM_RepetitionCounter = {{ timer.repetition_counter }};
+        TIM_TimeBaseInit({{ timer.instance }}, &TIM_TimeBaseStructure);
+{% if timer.has_channels %}
+
+        /* 自动重装载预装载：让 ARR 的修改在更新事件时生效，
+           避免计数器跑到一半改了周期而产生异常波形。 */
+        TIM_ARRPreloadConfig({{ timer.instance }}, ENABLE);
+
+{% for channel in timer.channels %}
+        /* {{ channel.channel }}：{{ channel.mode }}，CCR={{ channel.pulse }}（占空比 {{ channel.duty_percent }}%）{% if channel.pin_name %} → {{ channel.pin_name }}{% endif %}{% if channel.label %}（{{ channel.label }}）{% endif %} */
+        {
+            TIM_OCInitTypeDef TIM_OCInitStructure;
+            TIM_OCInitStructure.TIM_OCMode      = {{ channel.mode }};
+            TIM_OCInitStructure.TIM_OutputState = {{ channel.output_state }};
+            TIM_OCInitStructure.TIM_Pulse       = {{ channel.pulse }};
+            TIM_OCInitStructure.TIM_OCPolarity  = {{ channel.polarity }};
+            {{ channel.init_function }}({{ timer.instance }}, &TIM_OCInitStructure);
+        }
+        /* 预装载使能：改 CCR 时新值在更新事件才生效。不开的话会在计数器
+           跑到一半时立刻生效，可能产生一个残缺脉冲（示波器上的窄毛刺）。 */
+        {{ channel.preload_function }}({{ timer.instance }}, {{ channel.preload }});
+
+{% endfor %}
+{% endif %}
+{% if timer.is_advanced and timer.has_channels %}
+        /* **高级定时器必须开主输出**：BDTR.MOE 位复位值是 0，
+           不开的话 PWM 引脚不会有任何波形 —— 这是 TIM1/TIM8
+           最常见的"配置都对了但没输出"原因。通用定时器（TIM2~4）
+           没有 BDTR 寄存器，不需要这句。 */
+        TIM_CtrlPWMOutputs({{ timer.instance }}, ENABLE);
+
+{% endif %}
+{% if timer.has_interrupts %}
+        /* 使能中断。要生效需要两步：
+           1. 这里用 TIM_ITConfig 开外设侧的中断
+           2. bsp_nvic_init() 里用 NVIC_Init 开 NVIC 侧的通道
+           只做其中一步，中断不会触发。 */
+{% for it in timer.interrupts %}
+        TIM_ITConfig({{ timer.instance }}, {{ it }}, ENABLE);
+{% endfor %}
+
+{% endif %}
+        TIM_Cmd({{ timer.instance }}, ENABLE);
+    }
+
+{% endfor %}
+{% if not ctx.tim_configs %}
+    /* 本次没有配置任何定时器。
+       函数保留为空实现，使 bsp_init() 的调用序列在所有配置下都一致。 */
+{% endif %}
+}

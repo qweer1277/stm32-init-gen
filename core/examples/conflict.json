@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "chip": "STM32F103C8T6",
+  "hse_hz": 8000000,
+  "project_name": "conflict_demo",
+  "gpio": [
+    {
+      "port": "GPIOA",
+      "pin": 9,
+      "mode": "GPIO_Mode_Out_PP",
+      "speed": "GPIO_Speed_2MHz",
+      "init_level": "Bit_SET",
+      "label": "故意与 USART1 TX 冲突"
+    },
+    {
+      "port": "GPIOA",
+      "pin": 13,
+      "mode": "GPIO_Mode_Out_PP",
+      "speed": "GPIO_Speed_2MHz",
+      "init_level": "Bit_SET",
+      "label": "故意占用 SWDIO"
+    }
+  ],
+  "usart": [
+    {
+      "instance": "USART1",
+      "baudrate": 115200,
+      "interrupts": [
+        "USART_IT_RXNE"
+      ],
+      "label": "使能了中断但没配 NVIC"
+    }
+  ],
+  "nvic": {
+    "priority_group": "NVIC_PriorityGroup_4",
+    "channels": [
+      {
+        "irq_channel": "USART1_IRQn",
+        "preemption_priority": 0,
+        "sub_priority": 3,
+        "enabled": true,
+        "for_peripheral": "USART1"
+      }
+    ]
+  }
+}

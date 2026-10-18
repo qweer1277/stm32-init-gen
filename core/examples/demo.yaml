@@ -1,0 +1,33 @@
+version: 1
+chip: STM32F103C8T6
+hse_hz: 8000000
+project_name: demo
+gpio:
+- port: GPIOC
+  pin: 13
+  mode: GPIO_Mode_Out_PP
+  speed: GPIO_Speed_50MHz
+  init_level: Bit_SET
+  label: LED1 低电平点亮
+usart:
+- instance: USART1
+  baudrate: 115200
+  word_length: USART_WordLength_8b
+  stop_bits: USART_StopBits_1
+  parity: USART_Parity_No
+  direction: RX_TX
+  flow_control: USART_HardwareFlowControl_None
+  interrupts:
+  - USART_IT_RXNE
+  remap: ''
+  tx_pin: null
+  rx_pin: null
+  label: 调试串口
+nvic:
+  priority_group: NVIC_PriorityGroup_2
+  channels:
+  - irq_channel: USART1_IRQn
+    preemption_priority: 1
+    sub_priority: 1
+    enabled: true
+    for_peripheral: USART1

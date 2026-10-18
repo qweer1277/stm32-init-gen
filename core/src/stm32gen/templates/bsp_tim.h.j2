@@ -1,0 +1,53 @@
+/**
+  ******************************************************************************
+  * @file    bsp_tim.h
+  * @brief   {{ ctx.chip }} 定时器（TIM）配置。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * 定时器时钟**不是 PCLK**：APB 分频系数 != 1 时，定时器时钟是 PCLK 的
+  * 2 倍。PCLK1 = 36MHz 时 TIM2 的时钟是 72MHz —— 算定时周期时弄错就差一倍。
+  * 本文件用时钟树里的 tim 时钟（见各实例注释里的推导过程）。
+  ******************************************************************************
+  */
+
+#ifndef __BSP_TIM_H
+#define __BSP_TIM_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "stm32f10x.h"
+
+/* Exported types ------------------------------------------------------------*/
+/* Exported constants --------------------------------------------------------*/
+/* Exported macro ------------------------------------------------------------*/
+/* Exported functions ------------------------------------------------------- */
+
+/**
+  * @brief  初始化全部已配置的定时器（时基 + 输出比较 + 中断使能）。
+  * @note   定时器的 PWM 输出引脚由 bsp_gpio_init() 配成复用推挽输出，
+  *         所以本函数要在 GPIO 之后调用。
+{% if ctx.tim_configs %}
+  *
+  *         本次配置了 {{ ctx.tim_configs | length }} 个定时器：
+{% for timer in ctx.tim_configs %}
+  *           {{ timer.instance }}：{{ timer.frequency_note }}
+{% endfor %}
+{% else %}
+  *
+  *         本次没有配置任何定时器，本函数是空实现。
+{% endif %}
+  * @param  None
+  * @retval None
+  */
+void bsp_tim_init(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __BSP_TIM_H */
+
+/******************* (C) COPYRIGHT 2011 STMicroelectronics *****END OF FILE****/

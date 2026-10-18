@@ -1,0 +1,71 @@
+/**
+  ******************************************************************************
+  * @file    bsp_afio.h
+  * @brief   {{ ctx.chip }} AFIO（复用功能 IO）配置。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * AFIO 是标准库里两件功能的载体，本文件两件都管：
+  *   1. **引脚重映射**（``AFIO->MAPR``）—— USART 与 TIM 的重映射
+  *   2. **SWJ 调试口释放** —— 把 PA13/PA14/PA15/PB3/PB4 从调试口手里
+  *      抢回来当普通 GPIO
+  *
+  * 重映射放本文件而不是各外设文件里，是**执行顺序**的要求：
+  * 重映射必须在 ``GPIO_Init`` 之前生效，而 ``bsp_afio_init()`` 由
+  * ``bsp_init()`` 排在 ``bsp_gpio_init()`` 之前调用。
+  *
+  * AFIO 时钟也在本文件使能 —— 上述操作全部直接写 AFIO 寄存器，
+  * 没时钟时写入无效且不报错。
+  ******************************************************************************
+  */
+
+#ifndef __BSP_AFIO_H
+#define __BSP_AFIO_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "stm32f10x.h"
+
+/* Exported types ------------------------------------------------------------*/
+/* Exported constants --------------------------------------------------------*/
+/* Exported macro ------------------------------------------------------------*/
+/* Exported functions ------------------------------------------------------- */
+
+/**
+  * @brief  配置 AFIO：使能时钟 → 引脚重映射 → SWJ 调试口释放。
+  * @note   **必须在 bsp_gpio_init() 之前调用**：重映射改的是引脚的复用
+  *         功能来源，配好之后再设引脚模式才有意义。
+{% if ctx.afio.has_remaps %}
+  *
+  *         本次引脚重映射：
+{% for item in ctx.afio.remaps %}
+  *           {{ item.comment }}
+{% endfor %}
+{% endif %}
+{% if ctx.afio.has_swj %}
+  *
+  *         SWJ 释放：{{ ctx.afio.swj_name }}
+  *         释放引脚：{% for pin in ctx.afio.releases %}{{ pin }}{% if not loop.last %}、{% endif %}{% endfor %}
+{% if not ctx.afio.keeps_swd %}
+  *         **注意：SWD 也被关闭，之后调试器无法再连接。**
+{% endif %}
+{% endif %}
+{% if not ctx.afio.has_content %}
+  *
+  *         本次未用到任何 AFIO 功能，本函数是空实现
+  *         （保持 bsp_init() 的调用序列一致）。
+{% endif %}
+  * @param  None
+  * @retval None
+  */
+void bsp_afio_init(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __BSP_AFIO_H */
+
+/******************* (C) COPYRIGHT 2011 STMicroelectronics *****END OF FILE****/

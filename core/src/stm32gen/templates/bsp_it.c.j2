@@ -1,0 +1,119 @@
+/**
+  ******************************************************************************
+  * @file    bsp_it.c
+  * @brief   {{ ctx.chip }} 中断服务函数骨架。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * 函数名必须与启动文件向量表中的符号完全一致，
+  * 否则链接时不会覆盖启动文件里的弱定义，中断进了也执行不到这里。
+  * 本文件对应的符号定义在 Start\startup_stm32f10x_md.s 的向量表与
+  * EXPORT ... [WEAK] 段。
+  *
+  * ISR 内只做最小必要工作：判标志、取数据、置标志位，然后退出。
+  * 禁止在 ISR 内忙等、延时、动态分配内存或调用 printf。
+  ******************************************************************************
+  */
+
+#include "bsp_it.h"
+#include "bsp_init.h"
+
+{% if not ctx.has_interrupts %}
+/* 本次配置没有使能任何中断，因此没有需要实现的中断服务函数。
+   若后续在配置里给 USART / EXTI / TIM 勾选中断并配置 NVIC 通道，
+   重新生成即可。 */
+
+{% endif %}
+{% for handler in ctx.handlers %}
+/**
+  * @brief  {{ handler.instance }} 全局中断服务函数。
+  * @note   函数名必须与启动文件向量表中的符号一致（{{ handler.irqn }}）。
+{% if handler.is_multi %}
+  *
+  *         本函数检查 {{ handler.checks | length }} 个中断源。
+{% endif %}
+  * @param  None
+  * @retval None
+  */
+void {{ handler.handler }}(void)
+{
+{% for check in handler.checks %}
+    /* {{ check.name }}：{{ check.hint }} */
+    if (USART_GetITStatus({{ handler.instance }}, {{ check.it_macro }}) != RESET)
+    {
+        /* 清挂起位：{{ check.clear_note }} */
+        {{ check.clear_stmt }}
+        /* TODO: 在此填入 {{ check.name }} 的业务处理。
+           ISR 里只做取数据与置标志，耗时操作交给主循环。 */
+    }
+{% if not loop.last %}
+
+{% endif %}
+{% endfor %}
+}
+
+{% endfor %}
+{% for handler in ctx.exti_handlers %}
+/**
+  * @brief  {{ handler.handler }} 外部中断服务函数。
+  * @note   函数名必须与启动文件向量表中的符号一致（{{ handler.irqn }}）。
+{% if handler.is_shared %}
+  *
+  *         **本通道被多条线共享**：{{ handler.description }}。
+  *         STM32 的 EXTI 把线 5~9 归到一个中断通道、10~15 归到另一个，
+  *         所以必须**逐个判标志位**才能知道是哪条线触发的 ——
+  *         这正是下面每个分支都要单独 if 的原因，不能合并。
+{% endif %}
+  * @param  None
+  * @retval None
+  */
+void {{ handler.handler }}(void)
+{
+{% for line in handler.lines %}
+    /* {{ line.line_macro }} ← {{ line.pin_name }}{% if line.label %}（{{ line.label }}）{% endif %}：{{ line.trigger_label }}触发 */
+    if (EXTI_GetITStatus({{ line.line_macro }}) != RESET)
+    {
+        /* 清挂起位。EXTI 的挂起位必须显式清除，否则会反复进中断。 */
+        EXTI_ClearITPendingBit({{ line.line_macro }});
+        /* TODO: 在此填入 {{ line.pin_name }} 的业务处理。
+           ISR 里只做置标志，耗时操作交给主循环。 */
+    }
+{% if not loop.last %}
+
+{% endif %}
+{% endfor %}
+}
+
+{% endfor %}
+{% for timer in ctx.tim_configs %}
+{% if timer.has_interrupts %}
+/**
+  * @brief  {{ timer.instance }} 全局中断服务函数。
+  * @note   函数名必须与启动文件向量表中的符号一致（{{ timer.irqn }}）。
+{% if timer.is_advanced %}
+  *
+  *         TIM1 是高级定时器，中断被拆成 4 个（UP/BRK/TRG_COM/CC），
+  *         本函数只处理**更新事件**（TIM1_UP_IRQn）。
+  *         若还需要捕获比较中断，那是 TIM1_CC_IRQHandler，需要另外实现。
+{% endif %}
+  * @param  None
+  * @retval None
+  */
+void {{ timer.irqn.replace("_IRQn", "_IRQHandler") }}(void)
+{
+{% for it in timer.interrupts %}
+    /* {{ it }} */
+    if (TIM_GetITStatus({{ timer.instance }}, {{ it }}) != RESET)
+    {
+        /* 清挂起位。TIM 的挂起位必须显式清除，否则会反复进中断。 */
+        TIM_ClearITPendingBit({{ timer.instance }}, {{ it }});
+        /* TODO: 在此填入该中断的业务处理。
+           ISR 里只做置标志，耗时计算交给主循环。 */
+    }
+{% if not loop.last %}
+
+{% endif %}
+{% endfor %}
+}
+
+{% endif %}
+{% endfor %}

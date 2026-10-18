@@ -1,0 +1,66 @@
+/**
+  ******************************************************************************
+  * @file    bsp_usart.c
+  * @brief   {{ ctx.chip }} USART 初始化实现。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * TX/RX 引脚的 GPIO_Init 在 bsp_gpio.c 里 —— 引脚模式是 GPIO 的职责，
+  * 同一引脚只在一处配置，避免两处配同一引脚而模式不同的隐患。
+  ******************************************************************************
+  */
+
+#include "bsp_usart.h"
+
+/**
+  * @brief  初始化全部 USART 实例（含实例时钟、参数配置与中断使能）。
+  * @note   顺序：**时钟 → USART_Init → 中断使能 → USART_Cmd**。
+  *         时钟必须最先（否则后续寄存器写入无效）；
+  *         中断使能放在 USART_Cmd 之前，避免"外设已开、中断配置还没写完"
+  *         的窗口里进来一次不完整的中断。
+  * @param  None
+  * @retval None
+  */
+void bsp_usart_init(void)
+{
+{% if ctx.usart_clocks %}
+{% for clock in ctx.usart_clocks %}
+    /* {{ clock.comment }} */
+    {{ clock.c_line }}
+{% endfor %}
+
+{% endif %}
+{% for item in ctx.usart_configs %}
+    /* {{ item.instance }}{% if item.label %} — {{ item.label }}{% endif %}：
+       请求 {{ item.baudrate }} bps，实际 {{ item.baud_actual }} bps
+       （误差 {{ item.baud_error }}%，BRR = {{ item.brr_hex }}）。
+       BRR 是用标准库那套整数算法复算出来的，可直接与寄存器对照。 */
+    {
+        /* 变量名用 ST 例程的惯例名（USART_InitStructure），便于与官方例程对照。 */
+        USART_InitTypeDef USART_InitStructure;
+        USART_InitStructure.USART_BaudRate            = {{ item.baudrate }};
+        USART_InitStructure.USART_WordLength          = {{ item.word_length }};
+        USART_InitStructure.USART_StopBits            = {{ item.stop_bits }};
+        USART_InitStructure.USART_Parity              = {{ item.parity }};
+        USART_InitStructure.USART_Mode                = {{ item.mode_expression }};
+        USART_InitStructure.USART_HardwareFlowControl = {{ item.flow_control }};
+        USART_Init({{ item.instance }}, &USART_InitStructure);
+{% if item.interrupts %}
+
+        /* 使能中断。注意中断要生效需要两步：
+           1. 这里用 USART_ITConfig 开外设侧的中断
+           2. bsp_nvic_init() 里用 NVIC_Init 开 NVIC 侧的通道
+           只做其中一步，中断不会触发。 */
+{% for it in item.interrupts %}
+        USART_ITConfig({{ item.instance }}, {{ it }}, ENABLE);
+{% endfor %}
+{% endif %}
+
+        USART_Cmd({{ item.instance }}, ENABLE);
+    }
+
+{% endfor %}
+{% if not ctx.usart_configs %}
+    /* 本次配置没有 USART 实例：既没有时钟要使能，也没有参数要配。
+       函数保留为空实现，使 bsp_init() 的调用顺序在所有配置下都一致。 */
+{% endif %}
+}

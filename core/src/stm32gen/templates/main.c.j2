@@ -1,0 +1,37 @@
+/**
+  ******************************************************************************
+  * @file    main.c
+  * @brief   {{ ctx.chip }} 主程序骨架。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * 时钟说明：{{ ctx.clock_tree_note }}
+{% if ctx.rcc.enabled %}
+  *   bsp_init() → bsp_rcc_init() 会按配置设置上面这条时钟树，
+  *   启动文件里的 SystemInit() 只是给内核一个初始时钟，
+  *   真正的配置以 bsp_rcc_init() 为准。
+{% else %}
+  *   本次未生成 RCC 配置代码，时钟由启动文件的 SystemInit() 决定
+  *   （标准库 SetSysClockTo72() 固定 HSE×9 → 72MHz）。
+{% endif %}
+  ******************************************************************************
+  */
+
+#include "bsp_init.h"
+#include "bsp_it.h"
+
+/**
+  * @brief  主函数。
+  * @param  None
+  * @retval int（标准 C 要求，裸机下不会返回）
+  */
+int main(void)
+{
+    /* 初始化全部已配置的外设：时钟 → GPIO → USART → NVIC。
+       各外设单独初始化时可直接调用 bsp_rcc_init() / bsp_gpio_init() 等。 */
+    bsp_init();
+
+    /* TODO: 在此填入主循环逻辑 */
+    while (1)
+    {
+    }
+}

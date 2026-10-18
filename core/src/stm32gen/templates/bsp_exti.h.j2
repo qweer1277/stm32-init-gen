@@ -1,0 +1,61 @@
+/**
+  ******************************************************************************
+  * @file    bsp_exti.h
+  * @brief   {{ ctx.chip }} 外部中断（EXTI）配置。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * EXTI 的配置分两步，本文件两步都做：
+  *   1. GPIO_EXTILineConfig(...)  选择该中断线接哪个**端口**
+  *   2. EXTI_Init(...)            配置触发边沿与模式
+  *
+  * 第 1 步写的是 AFIO->EXTICR 寄存器，所以 AFIO 时钟必须已使能
+  * （由生成器自动加在 bsp_gpio.c 里）。
+  *
+  * **硬件约束**：每条线只能接一个端口 —— EXTICR 每个引脚号只有 4 位
+  * 选择字段。PA0 与 PB0 不能同时做 EXTI0，后配置的会覆盖先配置的。
+  * 校验层会拦这种冲突（exti.line_conflict）。
+  ******************************************************************************
+  */
+
+#ifndef __BSP_EXTI_H
+#define __BSP_EXTI_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "stm32f10x.h"
+
+/* Exported types ------------------------------------------------------------*/
+/* Exported constants --------------------------------------------------------*/
+/* Exported macro ------------------------------------------------------------*/
+/* Exported functions ------------------------------------------------------- */
+
+/**
+  * @brief  初始化全部已配置的外部中断线。
+  * @note   顺序：先 GPIO_EXTILineConfig 选端口，再 EXTI_Init 配边沿。
+  *         必须在 bsp_gpio_init() **之后**调用 —— 引脚要先配成输入模式，
+  *         否则中断线选好了但引脚状态不确定，会立刻误触发。
+{% if ctx.exti_lines %}
+  *
+  *         本次配置了 {{ ctx.exti_lines | length }} 条线：
+{% for line in ctx.exti_lines %}
+  *           {{ line.line_macro }} ← {{ line.pin_name }}（{{ line.trigger_label }}）
+{% endfor %}
+{% else %}
+  *
+  *         本次没有配置任何 EXTI 线，本函数是空实现。
+{% endif %}
+  * @param  None
+  * @retval None
+  */
+void bsp_exti_init(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __BSP_EXTI_H */
+
+/******************* (C) COPYRIGHT 2011 STMicroelectronics *****END OF FILE****/

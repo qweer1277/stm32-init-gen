@@ -1,0 +1,71 @@
+/**
+  ******************************************************************************
+  * @file    bsp_it.h
+  * @brief   {{ ctx.chip }} 中断服务函数声明。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * 本文件与标准库自带的 stm32f10x_it.h 是并列关系，不是替代：
+  *   - stm32f10x_it.c/h 负责 Cortex-M3 内核异常（NMI/HardFault/SysTick…）
+  *   - bsp_it.c/h 负责本工程用到的外设中断（USART1_IRQHandler…）
+  * 两者都会定义弱符号覆盖，互不冲突。
+  ******************************************************************************
+  */
+
+#ifndef __BSP_IT_H
+#define __BSP_IT_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "stm32f10x.h"
+
+/* Exported types ------------------------------------------------------------*/
+/* Exported constants --------------------------------------------------------*/
+/* Exported macro ------------------------------------------------------------*/
+/* Exported functions ------------------------------------------------------- */
+
+{% if not ctx.has_interrupts %}
+/* 本次配置没有使能任何中断。 */
+
+{% endif %}
+{% for handler in ctx.handlers %}
+/**
+  * @brief  {{ handler.instance }} 全局中断服务函数（{{ handler.irqn }}）。
+  * @param  None
+  * @retval None
+  */
+void {{ handler.handler }}(void);
+
+{% endfor %}
+{% for handler in ctx.exti_handlers %}
+/**
+  * @brief  {{ handler.handler }} 外部中断服务函数（{{ handler.irqn }}）。
+{% if handler.is_shared %}
+  * @note   共享通道，覆盖 {{ handler.description }}。
+{% endif %}
+  * @param  None
+  * @retval None
+  */
+void {{ handler.handler }}(void);
+
+{% endfor %}
+{% for timer in ctx.tim_configs %}
+{% if timer.has_interrupts %}
+/**
+  * @brief  {{ timer.instance }} 全局中断服务函数（{{ timer.irqn }}）。
+  * @param  None
+  * @retval None
+  */
+void {{ timer.irqn.replace("_IRQn", "_IRQHandler") }}(void);
+
+{% endif %}
+{% endfor %}
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __BSP_IT_H */
+
+/******************* (C) COPYRIGHT 2011 STMicroelectronics *****END OF FILE****/

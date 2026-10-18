@@ -1,0 +1,48 @@
+/**
+  ******************************************************************************
+  * @file    bsp_nvic.c
+  * @brief   {{ ctx.chip }} NVIC 优先级分组与中断通道配置。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  ******************************************************************************
+  */
+
+#include "bsp_nvic.h"
+
+/**
+  * @brief  配置 NVIC 优先级分组与中断通道。
+  * @note   {{ ctx.nvic_group_note }}
+  *
+  *         **NVIC_PriorityGroupConfig 在整个固件里只能调用一次。**
+  *         一个 Cortex-M3 内核只有一份 AIRCR.PRIGROUP 分组设置，
+  *         它是全局的而不是每通道的 —— 后调用的一方会覆盖前者，
+  *         导致先前按另一套分组算好的优先级全部错位。
+  * @param  None
+  * @retval None
+  */
+void bsp_nvic_init(void)
+{
+    /* 优先级分组：抢占与子优先级的位宽由此决定。
+       必须在使用任何优先级数值之前设置。 */
+    NVIC_PriorityGroupConfig({{ ctx.nvic_group }});
+
+{% if ctx.nvic_channels %}
+    {
+        /* 变量名用 ST 例程的惯例名（NVIC_InitStructure），便于与官方例程对照。 */
+        NVIC_InitTypeDef NVIC_InitStructure;
+
+{% for item in ctx.nvic_channels %}
+        /* {{ item.comment }}：抢占 {{ item.preemption }} / 子优先级 {{ item.sub }} */
+        NVIC_InitStructure.NVIC_IRQChannel                   = {{ item.irq_channel }};
+        NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = {{ item.preemption }};
+        NVIC_InitStructure.NVIC_IRQChannelSubPriority        = {{ item.sub }};
+        NVIC_InitStructure.NVIC_IRQChannelCmd                = ENABLE;
+        NVIC_Init(&NVIC_InitStructure);
+
+{% endfor %}
+    }
+{% else %}
+    /* 本次配置没有使能任何中断通道，只设置了优先级分组。
+       分组本身仍是必要的：工程里别处若要用中断，
+       分组一致才不会互相破坏优先级语义。 */
+{% endif %}
+}

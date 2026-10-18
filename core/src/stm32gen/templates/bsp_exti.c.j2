@@ -1,0 +1,53 @@
+/**
+  ******************************************************************************
+  * @file    bsp_exti.c
+  * @brief   {{ ctx.chip }} 外部中断（EXTI）配置。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * 引脚的 GPIO_Init 在 bsp_gpio.c 里 —— 引脚模式是 GPIO 的职责，
+  * 同一引脚只在一处配置。
+  ******************************************************************************
+  */
+
+#include "bsp_exti.h"
+
+/**
+  * @brief  初始化全部已配置的外部中断线。
+  * @note   两条容易踩的坑，都在这里处理了：
+  *
+  *         1. **必须先 GPIO_EXTILineConfig 再 EXTI_Init**。
+  *            前者决定"这条线接哪个端口"，后者决定"什么边沿触发"。
+  *            顺序反了的话，EXTI 会先按默认的端口来源（PA）配置边沿，
+  *            等 EXTICR 改到别的端口时，边沿配置还在，看似能用，
+  *            但中间那段时间可能已经误触发了一次。
+  *         2. **GPIO_EXTILineConfig 写的是 AFIO->EXTICR**，
+  *            没使能 AFIO 时钟时这句完全无效且不报错 ——
+  *            现象是"中断怎么都不触发"。AFIO 时钟由生成器自动加在
+  *            bsp_gpio.c 里。
+  * @param  None
+  * @retval None
+  */
+void bsp_exti_init(void)
+{
+{% if ctx.exti_lines %}
+    EXTI_InitTypeDef EXTI_InitStructure;
+
+{% for line in ctx.exti_lines %}
+    /* {{ line.line_macro }} ← {{ line.pin_name }}{% if line.label %}（{{ line.label }}）{% endif %}：{{ line.trigger_label }}触发 */
+    /* 第 1 步：选择这条中断线接哪个端口。写的是 AFIO->EXTICR，
+       每条线只有一份端口选择 —— 同一条线被配两次时后写的会覆盖前者。 */
+    GPIO_EXTILineConfig({{ line.port_source }}, {{ line.pin_source }});
+
+    /* 第 2 步：配置触发边沿与模式 */
+    EXTI_InitStructure.EXTI_Line    = {{ line.line_macro }};
+    EXTI_InitStructure.EXTI_Mode    = {{ line.mode }};
+    EXTI_InitStructure.EXTI_Trigger = {{ line.trigger }};
+    EXTI_InitStructure.EXTI_LineCmd = ENABLE;
+    EXTI_Init(&EXTI_InitStructure);
+
+{% endfor %}
+{% else %}
+    /* 本次没有配置任何 EXTI 线。
+       函数保留为空实现，使 bsp_init() 的调用序列在所有配置下都一致。 */
+{% endif %}
+}

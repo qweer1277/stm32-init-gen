@@ -1,0 +1,65 @@
+/**
+  ******************************************************************************
+  * @file    bsp_gpio.h
+  * @brief   {{ ctx.chip }} GPIO 初始化与带标签引脚的端口/引脚宏。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * 本文件负责：
+  *   - 端口时钟使能
+  *   - 全部 GPIO_Init 调用，**含 USART 的 TX/RX、EXTI 的输入引脚、
+  *     TIM 的 PWM 输出引脚**
+  *
+  * 引脚重映射与 SWJ 释放**不在这里**，见 bsp_afio.c ——
+  * 那个模块排在 bsp_gpio_init() 之前执行，保证重映射先于 GPIO_Init 生效。
+  ******************************************************************************
+  */
+
+#ifndef __BSP_GPIO_H
+#define __BSP_GPIO_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "stm32f10x.h"
+
+/* Exported types ------------------------------------------------------------*/
+/* Exported constants --------------------------------------------------------*/
+
+{% if ctx.has_named_pins %}
+/* 带标签引脚的端口与引脚宏，可直接用于业务代码，例如：
+     GPIO_SetBits(BSP_LED1_PORT, BSP_LED1_PIN);
+   标签已转成合法 C 标识符（非字母数字字符替换为下划线）。 */
+{% for item in ctx.named_pins %}
+/* {{ item.comment }} */
+#define {{ item.macro_name }}_PORT      {{ item.port }}
+#define {{ item.macro_name }}_PIN       {{ item.pin_macro }}
+{% endfor %}
+{% else %}
+/* 本次没有任何引脚带标签，因此没有生成 BSP_xxx_PORT/BSP_xxx_PIN 宏。
+   给引脚填上 label 即可生成，业务代码里就不用写裸端口名。 */
+{% endif %}
+
+/* Exported macro ------------------------------------------------------------*/
+/* Exported functions ------------------------------------------------------- */
+
+/**
+  * @brief  初始化全部 GPIO 引脚（含端口时钟、重映射与 USART 的 TX/RX 引脚）。
+  * @note   输出引脚的顺序是「先写 ODR 再配模式」，不是反过来。
+  *         GPIO_SetBits/ResetBits 写的是 ODR，对输入模式引脚同样有效；
+  *         先写好 ODR 再切到输出模式，切换瞬间输出即为目标电平。
+  *         若反过来（先 GPIO_Init 再设电平），配置成输出的那一刻
+  *         ODR 还是复位值，引脚会先抖一下。
+  * @param  None
+  * @retval None
+  */
+void bsp_gpio_init(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __BSP_GPIO_H */
+
+/******************* (C) COPYRIGHT 2011 STMicroelectronics *****END OF FILE****/

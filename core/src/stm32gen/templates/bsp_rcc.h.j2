@@ -1,0 +1,67 @@
+/**
+  ******************************************************************************
+  * @file    bsp_rcc.h
+  * @brief   {{ ctx.chip }} 系统时钟（RCC）与 Flash 等待周期。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * 生成配置：
+  *   芯片      {{ ctx.chip }}
+  *   晶振      {{ ctx.hse_mhz }} MHz
+  *   时钟树    {{ ctx.clock_tree_note }}
+  ******************************************************************************
+  */
+
+#ifndef __BSP_RCC_H
+#define __BSP_RCC_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "stm32f10x.h"
+
+/* Exported constants --------------------------------------------------------*/
+
+/* 时钟频率常量（单位 Hz）。
+   业务代码算定时周期、串口超时、延时循环时都要用它们 —— 写死数字会在改
+   时钟树时静默算错，这里让编译器替你把常量跟着配置走。 */
+{% if ctx.rcc.enabled %}
+#define BSP_SYSCLK_HZ       {{ ctx.rcc.sysclk_hz }}u
+#define BSP_HCLK_HZ         {{ ctx.rcc.hclk_hz }}u
+#define BSP_PCLK1_HZ        {{ ctx.rcc.pclk1_hz }}u
+#define BSP_PCLK2_HZ        {{ ctx.rcc.pclk2_hz }}u
+/* 定时器时钟不是 PCLK：APB 分频系数 != 1 时定时器时钟是 PCLK 的 2 倍。
+   这极易算错 —— PCLK1 = 36MHz 时 TIM2 的时钟是 72MHz，算定时周期差一倍。 */
+#define BSP_TIM1_HZ         {{ ctx.rcc.tim1_hz }}u
+#define BSP_TIM234_HZ       {{ ctx.rcc.tim234_hz }}u
+{% else %}
+/* 本次未生成 RCC 初始化代码，时钟由启动文件的 SystemInit() 决定。
+   下面是按 rcc 配置**推演**出来的值，用于校验与注释；
+   若要与实际一致，请在配置里勾选生成 RCC 代码。 */
+#define BSP_SYSCLK_HZ       {{ ctx.rcc.sysclk_hz }}u
+#define BSP_HCLK_HZ         {{ ctx.rcc.hclk_hz }}u
+#define BSP_PCLK1_HZ        {{ ctx.rcc.pclk1_hz }}u
+#define BSP_PCLK2_HZ        {{ ctx.rcc.pclk2_hz }}u
+{% endif %}
+
+/* Exported macro ------------------------------------------------------------*/
+/* Exported types ------------------------------------------------------------*/
+/* Exported functions ------------------------------------------------------- */
+
+/**
+  * @brief  配置系统时钟：Flash 等待周期 → 时钟源 → PLL → 总线分频 → SYSCLK。
+  * @note   顺序不可调换，理由见 bsp_rcc.c 里各段注释。
+  *         必须在任何外设初始化之前调用。
+  * @param  None
+  * @retval None
+  */
+void bsp_rcc_init(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __BSP_RCC_H */
+
+/******************* (C) COPYRIGHT 2011 STMicroelectronics *****END OF FILE****/

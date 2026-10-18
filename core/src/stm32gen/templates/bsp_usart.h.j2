@@ -1,0 +1,51 @@
+/**
+  ******************************************************************************
+  * @file    bsp_usart.h
+  * @brief   {{ ctx.chip }} USART 初始化接口。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * 本文件负责：
+  *   - USART 实例时钟使能
+  *   - USART_Init 参数配置、中断使能、USART_Cmd
+  *
+  * TX/RX 引脚的 GPIO_Init 在 bsp_gpio.c 里 —— 引脚模式是 GPIO 的职责，
+  * 同一引脚只在一处配置，避免两处配同一引脚而模式不同的隐患。
+  ******************************************************************************
+  */
+
+#ifndef __BSP_USART_H
+#define __BSP_USART_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "stm32f10x.h"
+
+/* Exported types ------------------------------------------------------------*/
+/* Exported constants --------------------------------------------------------*/
+/* Exported macro ------------------------------------------------------------*/
+/* Exported functions ------------------------------------------------------- */
+
+/**
+  * @brief  初始化全部 USART 实例（含实例时钟、USART_Init 与中断使能）。
+  * @note   参数注释里的 BRR 值与误差是用标准库那套整数算法复算出来的，
+  *         与 USART_Init() 内部的实现一致。
+  *
+  *         **中断要生效需要两步**，本函数只做第一步：
+  *           1. 这里用 USART_ITConfig 开外设侧的中断
+  *           2. bsp_nvic_init() 里用 NVIC_Init 开 NVIC 侧的通道
+  *         只做其中一步，中断不会触发。校验层会检查两者是否配对。
+  * @param  None
+  * @retval None
+  */
+void bsp_usart_init(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __BSP_USART_H */
+
+/******************* (C) COPYRIGHT 2011 STMicroelectronics *****END OF FILE****/

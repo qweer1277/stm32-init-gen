@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stm32-init-gen-gui"
+version = "0.1.0"
+description = "STM32 标准外设库初始化代码生成器的桌面图形界面"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "stm32-init-gen contributors" }]
+keywords = ["stm32", "codegen", "gui", "pyside6", "embedded"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Embedded Systems",
+]
+
+# 生成/校验逻辑一行都不在这里 —— 全部来自 stm32-init-gen。
+# 本包只负责「显示」与「收集输入」，所以依赖里只有 UI 框架加核心库。
+dependencies = [
+    "stm32-init-gen",
+    "PySide6>=6.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/Qweer1277/stm32-init-gen"
+Repository = "https://github.com/Qweer1277/stm32-init-gen"
+Issues = "https://github.com/Qweer1277/stm32-init-gen/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+stm32-init-gui = "stm32gen_gui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# 窗口图标随包分发。editable 安装直接读源码树，wheel 安装靠这条把它打进去 ——
+# 漏了这条，装成 wheel 后图标静默消失（_app_icon 返回空 QIcon 不报错）。
+[tool.setuptools.package-data]
+stm32gen_gui = ["assets/*.ico", "assets/*.png"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

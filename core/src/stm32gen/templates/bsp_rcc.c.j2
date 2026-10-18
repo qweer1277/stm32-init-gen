@@ -1,0 +1,166 @@
+/**
+  ******************************************************************************
+  * @file    bsp_rcc.c
+  * @brief   {{ ctx.chip }} 系统时钟（RCC）与 Flash 等待周期配置。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * 时钟树：{{ ctx.clock_tree_note }}
+  *
+{% if ctx.rcc.enabled %}
+  * 本文件按配置**真正配置**了上面这条时钟树，不依赖启动文件里
+  * SetSysClockTo72() 的固定配置。
+{% else %}
+  * 本次**未生成** RCC 配置代码（配置里 rcc.enabled = false）：
+  * bsp_rcc_init() 是空实现，实际时钟由启动文件的 SystemInit() 决定。
+{% endif %}
+  ******************************************************************************
+  */
+
+#include "bsp_rcc.h"
+
+/* 等待硬件标志的上限循环次数。
+   依据 code-standards R4.3：任何等待硬件标志的循环都必须带上限或超时。
+   硬件坏掉（晶振不起振、PLL 锁不住）时无限等待会让固件卡死在启动阶段，
+   现场表现是"上电没反应"，比"主频不对"难查得多。
+
+   这里刻意给出有限次数而不是靠"正常情况很快"，取值参考标准库
+   system_stm32f10x.c 里 HSE_STARTUP_TIMEOUT 的量级（0x0500 ≈ 1280 次）。 */
+#define BSP_RCC_WAIT_LOOPS     0x4000u
+
+/**
+  * @brief  配置系统时钟。
+  * @note   顺序**不可调换**，每一段都依赖前一段的成果：
+  *
+  *         1. Flash 等待周期 —— 必须在提高 HCLK **之前**设好。
+  *            反过来的话，HCLK 已拉高而 Flash 还没加等待周期，
+  *            那段窗口里取指不稳，是"偶发跑飞"的经典成因。
+  *         2. 时钟源（HSE / HSI）—— 必须先稳定，PLL 才有输入。
+  *         3. PLL —— 必须在选它作 SYSCLK 之前使能并锁定。
+  *         4. 总线分频（AHB/APB1/APB2）—— 必须在切 SYSCLK 之前设好。
+  *            切完再改，中间那段时间挂在总线上的外设是超频运行的。
+  *         5. 切 SYSCLK 并等待 SWS 确认。
+  * @param  None
+  * @retval None
+  */
+void bsp_rcc_init(void)
+{
+{% if ctx.rcc.enabled %}
+{% if not ctx.rcc.flash_latency_is_override %}
+    /* ── (1) Flash 等待周期与预取缓冲 ──────────────────────────────────── */
+    /* HCLK {{ ctx.rcc.hclk_mhz }}MHz 按时钟推导需要 {{ ctx.rcc.flash_latency_recommended_ws }} 个等待周期
+       （0 WS: ≤24MHz / 1 WS: ≤48MHz / 2 WS: ≤72MHz）。
+       依据 STM32F103 数据手册中 HCLK 与等待周期的对应表。 */
+{% else %}
+    /* ── (1) Flash 等待周期与预取缓冲 ──────────────────────────────────── */
+    /* 等待周期来自**用户覆盖**（rcc.flash_latency_override）：
+       HCLK {{ ctx.rcc.hclk_mhz }}MHz 按时钟推导需要 {{ ctx.rcc.flash_latency_recommended_ws }} 个周期，
+       当前写的是 {{ ctx.rcc.flash_latency_ws }} 个。覆盖值由校验层检查，
+       偏低会导致取指不稳、偶发跑飞。 */
+{% endif %}
+    FLASH_SetLatency({{ ctx.rcc.flash_latency }});
+    /* HCLK 高于 24MHz 时预取必须开启，否则取指成为瓶颈。 */
+    FLASH_PrefetchBufferCmd({{ ctx.rcc.prefetch }});
+
+{% if ctx.rcc.uses_hse %}
+    /* ── (2) 使能 HSE 并等待稳定 ───────────────────────────────────────── */
+    RCC_HSEConfig({{ ctx.rcc.hse_state }});
+    /* RCC_WaitForHSEStartUp() 内部带超时计数，不会无限等待。
+       返回 ERROR 表示晶振没起振 —— 此时继续往下配 PLL 会锁不住，
+       所以直接返回，让调用方从"主频不对"这个现象能追到根因。 */
+    if (RCC_WaitForHSEStartUp() == ERROR)
+    {
+        /* 晶振未起振。常见原因：实物没焊晶振、频率与 HSE_VALUE 不符、
+           负载电容不对。此处保持复位默认（HSI 8MHz）运行，
+           波特率等按新时钟算出的值会不准 —— 但比卡死好。 */
+        return;
+    }
+
+{% endif %}
+{% if ctx.rcc.needs_hsi %}
+    /* ── (2b) 使能 HSI 并等待稳定（PLL 源选了 HSI/2）─────────────────── */
+    RCC_HSICmd(ENABLE);
+    {
+        /* HSI 是片内 RC，起振在微秒级，但仍不无限等待（R4.3）。 */
+        uint32_t guard;
+        for (guard = 0; guard < BSP_RCC_WAIT_LOOPS; guard++)
+        {
+            if (RCC_GetFlagStatus(RCC_FLAG_HSIRDY) != RESET)
+            {
+                break;
+            }
+        }
+        if (guard == BSP_RCC_WAIT_LOOPS)
+        {
+            return;  /* HSI 都没起来，芯片有问题，不具备继续配置的条件 */
+        }
+    }
+
+{% endif %}
+{% if ctx.rcc.needs_pll %}
+    /* ── (3) 配置并使能 PLL ────────────────────────────────────────────── */
+    /* PLL 输入 = {{ ctx.rcc.pll_source }} 选出的 {{ ctx.rcc.pll_input_mhz }}MHz，
+       乘以 {{ ctx.rcc.pll_factor }} 得 {{ ctx.rcc.sysclk_mhz }}MHz。
+       PLL 输入必须落在 4~16MHz，超出会锁不住（校验层 rcc.pll_input_out_of_range 会拦）。 */
+    RCC_PLLConfig({{ ctx.rcc.pll_source }}, {{ ctx.rcc.pll_multiplier }});
+    RCC_PLLCmd(ENABLE);
+
+    /* 等待 PLL 锁定。锁定失败通常是 PLL 输入超范围或供电不稳。
+       带超时而不是无限等：PLL 起不来时退回 HSI（8MHz）继续跑，
+       至少还能通过串口报出"时钟没配成"这个事实。 */
+    {
+        uint32_t guard;
+        for (guard = 0; guard < BSP_RCC_WAIT_LOOPS; guard++)
+        {
+            if (RCC_GetFlagStatus(RCC_FLAG_PLLRDY) != RESET)
+            {
+                break;
+            }
+        }
+        if (guard == BSP_RCC_WAIT_LOOPS)
+        {
+            return;  /* PLL 未锁定，不切 SYSCLK，留在 HSI 上 */
+        }
+    }
+
+{% endif %}
+    /* ── (4) 总线分频 ──────────────────────────────────────────────────── */
+    /* **三套宏的位域不同，绝不能混用**（见 models/rcc.py 的说明）：
+         RCC_HCLKConfig()  用 RCC_SYSCLK_Div*   （HPRE  bit[7:4]）
+         RCC_PCLK1Config() 用 RCC_HCLK_Div*     （PPRE1 bit[10:8]）
+         RCC_PCLK2Config() 用 RCC_HCLK_Div*     （PPRE2 bit[13:11]）
+       喂错宏库不会报错（assert_param 用的就是对应那一套），
+       只会静默写坏寄存器位。 */
+    RCC_HCLKConfig({{ ctx.rcc.ahb_prescaler }});
+    RCC_PCLK2Config({{ ctx.rcc.apb2_prescaler }});
+    /* APB1 分频必须让 PCLK1 ≤ 36MHz。超过这个值，挂在 APB1 上的
+       USART2/3、TIM2~4、I2C1、SPI2 都会工作不正常。 */
+    RCC_PCLK1Config({{ ctx.rcc.apb1_prescaler }});
+
+    /* ── (5) 切换 SYSCLK 并等待确认 ────────────────────────────────────── */
+    RCC_SYSCLKConfig({{ ctx.rcc.sysclk_source }});
+
+    /* 等待 SWS 位变为目标时钟源。RCC_GetSYSCLKSource() 返回的就是 SWS[1:0]：
+       0x00 = HSI、0x04 = HSE、0x08 = PLL。
+       不等确认就继续跑，后续按新主频算的波特率与定时周期会全错。 */
+    {
+        uint32_t guard;
+        for (guard = 0; guard < BSP_RCC_WAIT_LOOPS; guard++)
+        {
+            if (RCC_GetSYSCLKSource() == 0x{{ "%02X" % ctx.rcc.sysclk_sws }}u)
+            {
+                break;
+            }
+        }
+        /* 超时则不做什么：SWS 没切过去说明前面的步骤没成功，
+           此时停留在 HSI 上运行，与上面几个提前返回的路径一致。 */
+    }
+{% else %}
+    /* 本次未生成 RCC 配置代码（配置里 rcc.enabled = false）。 */
+
+    /* 保留这个空函数而不是让 bsp_init() 条件性地跳过调用：函数体在所有
+       配置下都一致，"为什么我的时钟没配"这类问题才好定位。
+       实际时钟由启动文件的 SystemInit() 决定 —— 标准库的
+       SetSysClockTo72() 固定 HSE×9 → 72MHz。
+       若要用本工具生成的时钟配置，把配置里 rcc.enabled 改成 true 即可。 */
+{% endif %}
+}

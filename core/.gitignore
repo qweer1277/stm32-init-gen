@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 生成产物
+#
+# 默认输出其实是源码树旁边的 ../stm32-init-gen-output（不在本仓库内，
+# 无需 ignore）。这里保留 out/ 只是兜底：装了包或临时指定 -o out 时产物
+# 会落回仓库根，不该被提交。
+out/
+*.generated.c
+*.generated.h
+
+# pytest 的 tmp 根
+#
+# 正常情况下它落在系统 TEMP 下，不会出现在这里。但系统 TEMP 不可写时
+# Python 的 tempfile 会把 cwd 当临时目录，于是每次跑测试都在仓库根堆出
+# pytest-of-<用户>/（上千个文件）。那不是产物，不该进 git；
+# 想彻底清掉直接删这个目录即可。
+pytest-of-*/

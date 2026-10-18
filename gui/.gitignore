@@ -1,0 +1,31 @@
+# 虚拟环境
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# 测试与工具缓存
+.pytest_cache/
+.ruff_cache/
+.coverage
+
+# pytest 的 tmp 根
+#
+# 正常情况下它落在系统 TEMP 下，不会出现在这里。但系统 TEMP 不可写时
+# Python 的 tempfile 会把 cwd 当临时目录，于是每次跑测试都在仓库根堆出
+# pytest-of-<用户>/（上千个文件）。那不是产物，不该进 git。
+pytest-of-*/
+
+# IDE
+.vscode/
+.idea/
+# 搜狗输入法注入进程会在当前目录写日志，与本项目无关
+debug.log
+# PyInstaller 构建产物
+dist/
+build/

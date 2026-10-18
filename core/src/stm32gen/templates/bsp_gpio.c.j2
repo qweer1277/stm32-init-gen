@@ -1,0 +1,67 @@
+/**
+  ******************************************************************************
+  * @file    bsp_gpio.c
+  * @brief   {{ ctx.chip }} GPIO 初始化（含端口时钟、重映射、USART 引脚）。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  ******************************************************************************
+  */
+
+#include "bsp_gpio.h"
+
+/**
+  * @brief  初始化全部 GPIO 引脚。
+  * @note   顺序：**时钟 → 逐个引脚的「初始电平 → 模式」**。
+  *
+  *         时钟使能放在本函数内而不是别处，是本文件拆分后的刻意选择：
+  *         本模块自己负责自己的时钟，删掉 GPIO 配置时这段代码跟着一起消失，
+  *         不会在别处留下一句"使能了已删除外设的时钟"。
+  *         必须在任何 GPIO 寄存器操作之前使能，否则配置不生效 ——
+  *         这是最常见的"配了没用"原因。
+  *
+  *         **引脚重映射与 SWJ 释放不在本函数里**，它们在 bsp_afio.c 的
+  *         ``bsp_afio_init()`` 中，由 ``bsp_init()`` 排在**本函数之前**调用。
+  *         放那里的理由是顺序：重映射改的是引脚的复用功能来源，
+  *         必须在 ``GPIO_Init`` 之前生效 —— 若放在之后，引脚会按旧映射
+  *         被配成复用推挽输出，改了来源后那个脚就不再是外设的输出脚
+  *         （现象是"外设没波形/没信号"，很难查）。
+  * @param  None
+  * @retval None
+  */
+void bsp_gpio_init(void)
+{
+{% if ctx.gpio_configs %}
+    /* 结构体变量名用 ST 例程的惯例名（GPIO_InitStructure）：
+       便于与官方例程、数据手册示例逐行对照，减少"这份代码里叫啥"的换算成本。 */
+    GPIO_InitTypeDef GPIO_InitStructure;
+
+{% endif %}
+{% if ctx.gpio_clock %}
+    /* {{ ctx.gpio_clock.comment }} */
+    {{ ctx.gpio_clock.c_line }}
+{% endif %}
+
+{% if ctx.gpio_configs %}
+{% for item in ctx.gpio_configs %}
+    /* {{ item.comment }} */
+{% if item.needs_level_init %}
+    /* 先写 ODR，再切到输出模式：GPIO_SetBits/ResetBits 写的是 ODR，
+       对输入模式引脚同样有效。这样切换瞬间输出即为目标电平。
+       反过来（先 GPIO_Init 再设电平）配置成输出的那一刻 ODR 还是复位值，
+       引脚会先抖一下。 */
+{% if item.init_level == "Bit_SET" %}
+    GPIO_SetBits({{ item.port }}, {{ item.pin_macro }});
+{% else %}
+    GPIO_ResetBits({{ item.port }}, {{ item.pin_macro }});
+{% endif %}
+{% endif %}
+    GPIO_InitStructure.GPIO_Pin   = {{ item.pin_macro }};
+    GPIO_InitStructure.GPIO_Mode  = {{ item.mode }};
+    GPIO_InitStructure.GPIO_Speed = {{ item.speed }};
+    GPIO_Init({{ item.port }}, &GPIO_InitStructure);
+
+{% endfor %}
+{% else %}
+    /* 本次配置没有用到任何 GPIO 引脚（也没有 USART 引脚需要配），
+       因此既没有端口时钟要使能，也没有 GPIO_Init 要生成。 */
+{% endif %}
+}

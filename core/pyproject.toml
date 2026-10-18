@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stm32-init-gen"
+version = "0.1.0"
+description = "STM32 标准外设库初始化代码生成器（库 + 命令行；桌面界面见 stm32-init-gen-gui）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "stm32-init-gen contributors" }]
+keywords = ["stm32", "stm32f103", "stdperiph", "codegen", "embedded", "firmware"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: C",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Embedded Systems",
+]
+dependencies = [
+    "pydantic>=2.5",
+    "Jinja2>=3.1",
+    "PyYAML>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Qweer1277/stm32-init-gen"
+Repository = "https://github.com/Qweer1277/stm32-init-gen"
+Issues = "https://github.com/Qweer1277/stm32-init-gen/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+stm32-init-gen = "stm32gen.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+stm32gen = ["templates/*.j2", "templates/**/*.j2", "stdlib_ref/*.json"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

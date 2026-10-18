@@ -1,0 +1,22 @@
+# 统一行尾，避免跨平台克隆后出现「所有文件都改过」的假 diff。
+#
+# 为什么仓库里一律存 LF、只在检出 Windows 批处理时转 CRLF：
+# 项目主要在 Windows 上开发，但源码里没有一行依赖 CRLF。反过来若把
+# CRLF 存进仓库，Linux/macOS 上克隆后 git diff 会把每个文件都标成改动，
+# 既污染审查，也让 CI 上的格式检查失去意义。
+* text=auto eol=lf
+
+# Windows 脚本由 cmd.exe / PowerShell 直接执行，保持原生 CRLF。
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制：禁止任何行尾转换与文本 diff。
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.exe binary
+*.dll binary
+*.zip binary

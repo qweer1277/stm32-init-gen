@@ -1,0 +1,73 @@
+/**
+  ******************************************************************************
+  * @file    bsp_init.h
+  * @brief   {{ ctx.chip }} 外设初始化总入口。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * 生成配置：
+  *   芯片      {{ ctx.chip }}
+  *   器件宏    {{ ctx.device_macro }}
+  *   晶振      {{ ctx.hse_mhz }} MHz
+  *   时钟树    {{ ctx.clock_tree_note }}
+  *
+  * 编译宏（缺一不可，否则 stm32f10x.h 会 #error）：
+{% for flag in ctx.c_flags %}
+  *   -D{{ flag }}
+{% endfor %}
+  *
+  * **本文件只是总入口**。各外设的接口在各自的头文件里：
+  *   bsp_rcc.h    系统时钟与 Flash 等待周期（含 BSP_xxx_HZ 频率常量）
+  *   bsp_afio.h   引脚重映射与 SWJ 调试口释放
+  *   bsp_gpio.h   GPIO 与带标签引脚的 BSP_xxx_PORT / BSP_xxx_PIN 宏
+  *   bsp_exti.h   外部中断（EXTI）线
+  *   bsp_usart.h  USART 实例
+  *   bsp_tim.h    定时器（TIM）
+  *   bsp_nvic.h   NVIC 优先级分组与通道
+  *   bsp_it.h     中断服务函数
+  * 为了让业务代码只需 include 一个头文件，下面把它们一并包含进来。
+  ******************************************************************************
+  */
+
+#ifndef __BSP_INIT_H
+#define __BSP_INIT_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "stm32f10x.h"
+
+#include "bsp_rcc.h"
+#include "bsp_afio.h"
+#include "bsp_gpio.h"
+#include "bsp_exti.h"
+#include "bsp_usart.h"
+#include "bsp_tim.h"
+#include "bsp_nvic.h"
+
+/* Exported types ------------------------------------------------------------*/
+/* Exported constants --------------------------------------------------------*/
+/* Exported macro ------------------------------------------------------------*/
+/* Exported functions ------------------------------------------------------- */
+
+/**
+  * @brief  初始化全部已配置的外设。
+  * @note   顺序不可调换：**时钟 → GPIO → USART → NVIC**。
+  *         时钟必须最先（否则后续寄存器写入无效），
+  *         NVIC 放在最后（中断通道开启时外设已配置完毕，避免提前进中断）。
+  *
+  *         本函数只负责按顺序调用，具体配置在各外设模块里 ——
+  *         想只初始化某一部分时，直接调用对应的 bsp_xxx_init() 即可。
+  * @param  None
+  * @retval None
+  */
+void bsp_init(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __BSP_INIT_H */
+
+/******************* (C) COPYRIGHT 2011 STMicroelectronics *****END OF FILE****/

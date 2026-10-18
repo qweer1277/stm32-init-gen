@@ -1,0 +1,10 @@
+# 运行时依赖（与 pyproject.toml 的 [project.dependencies] 保持一致）
+# 安装：python -m pip install -r requirements.txt
+#
+# 这里**没有 PySide6**：桌面界面是独立项目 stm32-init-gen-gui。
+# 只生成代码（脚本 / CI / 批处理）的环境不需要装 Qt。
+pydantic>=2.5
+Jinja2>=3.1
+PyYAML>=6.0
+
+# 开发期依赖（可选）：python -m pip install -r requirements-dev.txt

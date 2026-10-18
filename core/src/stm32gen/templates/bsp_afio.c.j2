@@ -1,0 +1,71 @@
+/**
+  ******************************************************************************
+  * @file    bsp_afio.c
+  * @brief   {{ ctx.chip }} AFIO 配置（引脚重映射 + SWJ 调试口释放）。
+  *          本文件由 stm32-init-gen 自动生成，请勿手工修改 —— 重新生成会覆盖。
+  *
+  * **本文件必须排在 bsp_gpio_init() 之前执行**（见 bsp_init.c）：
+  * 重映射改的是引脚的复用功能来源，必须在 GPIO_Init 之前生效。
+  * 若放到之后，引脚会按旧映射被配成复用推挽输出，改了来源后那个脚
+  * 就不再是外设的输出脚 —— 现象是"外设没波形/没信号"，极难排查。
+  ******************************************************************************
+  */
+
+#include "bsp_afio.h"
+
+/**
+  * @brief  配置 AFIO：时钟使能 → 引脚重映射 → SWJ 释放。
+  * @note   三段的顺序都有理由：
+  *
+  *         1. **时钟必须最先**：``GPIO_PinRemapConfig`` 与
+  *            ``GPIO_EXTILineConfig`` 都是直接写 ``AFIO->MAPR`` /
+  *            ``AFIO->EXTICR``，没使能 AFIO 时钟时写入**完全无效且不报错**
+  *            —— 现象是"配了没用"，这类问题最难查。
+  *         2. **重映射在 SWJ 释放之前**：两者都写 ``AFIO->MAPR``，
+  *            但 ``GPIO_PinRemapConfig`` 内部会先清掉对应位段再写
+  *            （见 Library\\stm32f10x_gpio.c 的实现），不会互相破坏。
+  *            先做重映射更符合"先配功能、后动调试口"的直觉顺序。
+  * @param  None
+  * @retval None
+  */
+void bsp_afio_init(void)
+{
+{% if ctx.afio.has_clock %}
+    /* {{ ctx.afio.clock.comment }} */
+    {{ ctx.afio.clock.c_line }}
+{% endif %}
+{% if ctx.afio.has_remaps %}
+
+    /* 外设引脚重映射。必须在 GPIO_Init 之前配置（本函数整体在
+       bsp_gpio_init() 之前被调用，见 bsp_init.c 的调用顺序说明）。 */
+{% for item in ctx.afio.remaps %}
+    /* {{ item.comment }} */
+    GPIO_PinRemapConfig({{ item.remap }}, ENABLE);
+{% endfor %}
+{% endif %}
+{% if ctx.afio.has_swj %}
+
+    /* SWJ 调试口释放{% if ctx.afio.releases %}：{% for pin in ctx.afio.releases %}{{ pin }}{% if not loop.last %}、{% endif %}{% endfor %}{% endif %} */
+{% for pin in ctx.afio.releases %}
+    /* 释放 {{ pin }} 作普通 GPIO 用 */
+{% endfor %}
+    GPIO_PinRemapConfig({{ ctx.afio.swj_remap }}, ENABLE);
+{% if not ctx.afio.keeps_swd %}
+    /* ******************************************************************
+       警告：上面这句把 SWD 也一起关闭了。执行到这一行之后，
+       调试器再也连不上本芯片，无法再下载/调试程序。
+
+       救回来的办法只有两条（都需要硬件或工具配合）：
+         1. 把 BOOT0 拉高，复位后从系统存储器启动，用串口/DFU 擦掉重烧
+         2. 用支持「复位时全片擦除」的调试器（如 ST-Link Utility）
+
+       若你只是想用 PA15/PB3/PB4 这三个引脚，改用
+       GPIO_Remap_SWJ_JTAGDisable（只关 JTAG，保留 SWD）就没有这个风险。
+       ****************************************************************** */
+{% endif %}
+{% endif %}
+{% if not ctx.afio.has_content %}
+    /* 本次配置没有用到任何 AFIO 功能（无重映射、无 SWJ 释放）。
+       函数保留为空实现，使 bsp_init() 的调用序列在所有配置下都一致。 */
+{% endif %}
+}
